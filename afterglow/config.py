@@ -19,7 +19,9 @@ DEFAULT_LOCATIONS = (
 )
 
 IMAGE_KINDS = ("raw", "jpeg", "heic", "png")
-RAW_EXTENSIONS = {"cr2", "cr3", "nef", "nrw", "arw", "srf", "sr2", "dng", "raf", "orf", "rw2", "pef", "x3f", "3fr", "iiq"}
+RAW_EXTENSIONS = {
+    "cr2", "cr3", "nef", "nrw", "arw", "srf", "sr2", "dng", "raf", "orf", "rw2", "pef", "x3f", "3fr", "iiq",
+}
 JPEG_EXTENSIONS = {"jpg", "jpeg", "jpe"}
 HEIC_EXTENSIONS = {"heic", "heif", "hif"}
 PNG_EXTENSIONS = {"png", "tif", "tiff", "webp"}
