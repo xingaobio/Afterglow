@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -39,12 +40,17 @@ class _Item:
     fields: dict[str, Any] = field(default_factory=dict)
 
 
+def _key(path: str) -> str:
+    """LUMEN reports resolved paths; compare on the real path so symlinked mount points still match."""
+    return os.path.realpath(path)
+
+
 def _photo_path(entry: Any) -> str | None:
     if isinstance(entry, str):
-        return entry
+        return _key(entry)
     if isinstance(entry, dict):
         value = entry.get("path") or entry.get("file") or entry.get("source")
-        return str(value) if value else None
+        return _key(str(value)) if value else None
     return None
 
 
@@ -77,7 +83,7 @@ class Cull(Stage):
         lumen_result = self._analyze_with_lumen(ctx, items)
         for item in items:
             try:
-                self._measure(ctx, item, lumen_result.get(item.rec.path))
+                self._measure(ctx, item, lumen_result.get(_key(item.rec.path)))
             except Exception as exc:
                 log.exception("选片分析失败: %s", item.rec.path)
                 outcomes[item.rec.id] = StepOutcome.failed(item.rec.id, exc)
@@ -116,7 +122,7 @@ class Cull(Stage):
 
     def _measure(self, ctx: Context, item: _Item, photo: dict[str, Any] | None) -> None:
         rec, cfg = item.rec, ctx.config.cull
-        if rec.width and rec.height and min(rec.width, rec.height) < cfg.min_long_edge:
+        if rec.width and rec.height and max(rec.width, rec.height) < cfg.min_long_edge:
             item.tiny = True
         rgb = None
         if rec.preview_path and Path(rec.preview_path).exists():
@@ -139,7 +145,7 @@ class Cull(Stage):
     # ------------------------------------------------------------------ bursts
     def _bursts(self, ctx: Context, items: list[_Item], lumen_bursts: list[Any]) -> None:
         cfg = ctx.config.cull
-        by_path = {i.rec.path: i for i in items if not i.tiny}
+        by_path = {_key(i.rec.path): i for i in items if not i.tiny}
         assigned: set[int] = set()
         clusters: list[tuple[list[_Item], _Item | None]] = []
         for burst in lumen_bursts:

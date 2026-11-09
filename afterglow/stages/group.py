@@ -159,9 +159,32 @@ class Group(Stage):
         if cur:
             segments.append(cur)
 
+        # Incremental runs: photos that arrive later join the event they belong to instead of
+        # spawning a second one (same for the per-month scattered bucket).
+        existing = ctx.state.groups("event")
+        extend = getattr(ctx.state, "add_group_members", None)
+        month_groups = {g["meta"].get("month"): g for g in existing if g["meta"].get("scattered")}
+        spans = []
+        for g in existing:
+            start, end = exif.parse_iso(g.get("started_at")), exif.parse_iso(g.get("ended_at"))
+            if start and end and not g["meta"].get("scattered"):
+                spans.append((start, end, g))
+        gap = cfg.gap_hours * 3600
+
+        def neighbour(seg: list[_Item]) -> dict[str, Any] | None:
+            first, last = seg[0].dt, seg[-1].dt
+            for start, end, g in spans:
+                if (first - end).total_seconds() <= gap and (start - last).total_seconds() <= gap:
+                    return g
+            return None
+
         count = 0
         scattered: dict[str, list[_Item]] = {}
         for seg in segments:
+            near = neighbour(seg) if callable(extend) else None
+            if near is not None:
+                extend(near["id"], [i.rec.id for i in seg])
+                continue
             if len(seg) < cfg.min_photos:
                 for item in seg:
                     scattered.setdefault(item.dt.strftime("%Y-%m"), []).append(item)
@@ -170,6 +193,9 @@ class Group(Stage):
             count += 1
         for month, seg in sorted(scattered.items()):
             seg.sort(key=lambda i: (i.dt, i.rec.id))
+            if month in month_groups and callable(extend):
+                extend(month_groups[month]["id"], [i.rec.id for i in seg])
+                continue
             meta = self._event_meta(seg)
             meta.update(scattered=True, month=month)
             ctx.state.create_group("event", [i.rec.id for i in seg], name=SCATTERED, meta=meta)

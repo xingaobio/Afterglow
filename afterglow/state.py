@@ -350,7 +350,7 @@ class State:
                 return []
             sql += f" AND f.id IN ({','.join('?' * len(ids))})"
             params.extend(ids)
-        sql += " ORDER BY f.id LIMIT ?"
+        sql += " ORDER BY f.captured_at IS NULL, f.captured_at, f.id LIMIT ?"
         params.append(int(limit))
         return self._records(self._query(sql, params))
 
@@ -443,6 +443,33 @@ class State:
                 self._conn.rollback()
                 raise
             return group_id
+
+    def add_group_members(self, group_id: int, member_ids: list[int]) -> None:
+        """Append files to an existing group (incremental runs) and refresh its time span."""
+        if not member_ids:
+            return
+        with self._lock:
+            try:
+                row = self._conn.execute(
+                    "SELECT COALESCE(MAX(position), -1) AS p FROM group_members WHERE group_id=?", (group_id,)
+                ).fetchone()
+                start = int(row["p"]) + 1
+                self._conn.executemany(
+                    "INSERT OR IGNORE INTO group_members(group_id, file_id, position) VALUES(?,?,?)",
+                    [(group_id, fid, start + i) for i, fid in enumerate(member_ids)],
+                )
+                self._conn.execute(
+                    "UPDATE groups SET "
+                    "started_at=(SELECT MIN(f.captured_at) FROM files f JOIN group_members m ON m.file_id=f.id "
+                    "WHERE m.group_id=groups.id), "
+                    "ended_at=(SELECT MAX(f.captured_at) FROM files f JOIN group_members m ON m.file_id=f.id "
+                    "WHERE m.group_id=groups.id) WHERE id=?",
+                    (group_id,),
+                )
+                self._conn.commit()
+            except BaseException:
+                self._conn.rollback()
+                raise
 
     def groups(self, kind: str, unnamed_only: bool = False) -> list[dict[str, Any]]:
         sql = "SELECT * FROM groups WHERE kind=?"

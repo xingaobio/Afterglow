@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 from afterglow.config import Events, Video
 from afterglow.stages.group import SCATTERED, STAGE, Group
@@ -164,3 +165,33 @@ def test_timelapse_too_short(tmp_path):
     ctx = fake_ctx(tmp_path, video=Video(timelapse_min_frames=60))
     seq(ctx, "tl", [i * 20.0 for i in range(40)])
     assert run_group(ctx)["timelapse"] == []
+
+
+def test_incremental_run_extends_existing_event(tmp_path):
+    """Photos indexed later join the neighbouring event / the month's scattered bucket (real State)."""
+    from afterglow import config
+    from afterglow.stages.group import Group
+    from afterglow.state import State
+
+    state = State(tmp_path / "a.db")
+    cfg = config.from_dict({"paths": {"source": str(tmp_path)}})
+    ctx = SimpleNamespace(state=state, config=cfg, dry_run=False)
+
+    def add(name: str, when: str) -> int:
+        return state.upsert_file(
+            {"path": str(tmp_path / name), "rel_path": name, "kind": "jpeg", "ext": "jpg", "captured_at": when}
+        )
+
+    for i in range(4):
+        add(f"a{i}.jpg", f"2024-05-12T10:0{i}:00+00:00")
+    add("lonely.jpg", "2024-07-01T09:00:00+00:00")
+    Group().run(ctx, [])
+    assert len(state.groups("event")) == 2
+
+    late = add("a9.jpg", "2024-05-12T11:30:00+00:00")
+    lonely2 = add("lonely2.jpg", "2024-07-20T09:00:00+00:00")
+    Group().run(ctx, [])
+    events = state.groups("event")
+    assert len(events) == 2
+    assert any(late in g["members"] and len(g["members"]) == 5 for g in events)
+    assert any(lonely2 in g["members"] and g["meta"].get("scattered") for g in events)

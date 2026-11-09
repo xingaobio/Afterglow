@@ -235,6 +235,7 @@ PY
       -e "s|^UPLOAD_LOCATION=.*|UPLOAD_LOCATION=${AFTERGLOW_DATA}/immich/upload|" \
       -e "s|^DB_DATA_LOCATION=.*|DB_DATA_LOCATION=${AFTERGLOW_DATA}/immich/postgres|" \
       -e "s|^AFTERGLOW_ORGANIZED=.*|AFTERGLOW_ORGANIZED=${AFTERGLOW_DATA}/library|" \
+      -e "s|^AFTERGLOW_OUTPUT=.*|AFTERGLOW_OUTPUT=${AFTERGLOW_DATA}/output|" \
       -e "s|^PHOTO_SOURCE=.*|PHOTO_SOURCE=${PHOTO_SOURCE}|" \
       "${IMMICH_DIR}/.env"
     chmod 600 "${IMMICH_DIR}/.env"
@@ -258,7 +259,7 @@ PY
     fi
   done
 
-  mkdir -p "${AFTERGLOW_DATA}/immich/upload" "${AFTERGLOW_DATA}/immich/postgres" "${AFTERGLOW_DATA}/library"
+  mkdir -p "${AFTERGLOW_DATA}/immich/upload" "${AFTERGLOW_DATA}/immich/postgres" "${AFTERGLOW_DATA}/library" "${AFTERGLOW_DATA}/output"
 
   DOCKER=(docker)
   docker info >/dev/null 2>&1 || DOCKER=(sudo docker)

@@ -32,6 +32,14 @@ def _same_mtime(a: float | None, b: float) -> bool:
     return a is not None and abs(a - b) < 1e-3
 
 
+def _is_under(path: str, root: Path) -> bool:
+    try:
+        Path(path).relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
 class Index(Stage):
     name = "index"
     requires = ()
@@ -91,6 +99,14 @@ class Index(Stage):
                 file_id = ctx.state.upsert_file(rec)
                 if existing is not None:
                     ctx.state.set_step(file_id, self.name, "pending")
+        known = ctx.state.files_where(missing=False)
+        under_source = [f for f in known if _is_under(f.path, source)]
+        if not present and under_source:
+            # An unplugged drive often leaves an empty mount directory behind.  Marking the whole
+            # catalog missing would be wrong, so stop here and leave the catalog untouched.
+            raise RuntimeError(f"源目录里没有任何照片，疑似移动硬盘未挂载: {source}（目录库未改动）")
+        # Originals moved into the organized tree (organize.mode = move) are still present.
+        present.update(f.path for f in known if not _is_under(f.path, source) and os.path.exists(f.path))
         gone = ctx.state.mark_missing(present)
         log.info("扫描完成: 共 %d 个文件，新增 %d，变化 %d，消失 %d", len(present), new, changed, gone)
         return len(present)

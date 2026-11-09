@@ -48,6 +48,10 @@ class RunReport:
     note: str = ""
 
     @property
+    def aborted(self) -> list[str]:
+        return [name for name, s in self.stages.items() if s.aborted]
+
+    @property
     def ok(self) -> int:
         return sum(s.ok for s in self.stages.values())
 

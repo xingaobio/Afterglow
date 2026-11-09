@@ -183,7 +183,10 @@ XMP 附属文件写在 `output/xmp/` 下，**不会**写到原图旁边。`organ
 2. **Immich API 端点**：客户端按 v1.1xx–v2 的 `/api/jobs`、`/api/search/metadata`、`/api/albums`、`/api/tags` 写成，并对 v3 可能的 `/api/queues` 做了回退；`deploy/immich/docker-compose.yml` 没有和官方最新文件逐行比对。`install.sh` 会把官方 compose 下载到 `/opt/immich/official/` 供对照。
 3. **模型校验和**：`deploy/models/models.lock` 里四个 GGUF 的 sha256 是 `TODO-verify-on-first-download`，`download.sh` 首次下载后会写回，之后每次校验。
 4. **systemd / udev**：单元文件和 udev 规则只做了语法检查（`systemd-analyze verify`），没有在真机触发过。
-5. **RTX 2000 的实际速度**：所有耗时都是估算，请用 `afterglow bench` 实测。
+5. **Immich 是否跟随符号链接**：默认 `organize.mode = "symlink"`，compose 已把原图目录、整理目录、导出目录按宿主机相同路径只读挂进容器，链接在容器内不会悬空；但 Immich 外部图库对符号链接的扫描行为没有实测。若扫描到 0 个文件，把 `organize.mode` 改成 `copy`（多占一份空间）。
+6. **35B“大脑”模型不会自动切换**：`afterglow-brain.service` 与 `afterglow-llm.service` 互斥，目前需要手动 `systemctl start`；`llm.brain_server` 留空时事件命名直接用 4B 模型。
+7. **导出图不在撤销范围内**：`undo` 还原目录树、XMP 和 Immich 的改动；`output/` 下的导出、裁切、增强文件是可再生的产物，需要时直接删除该目录。
+8. **RTX 2000 的实际速度**：所有耗时都是估算，请用 `afterglow bench` 实测。
 
 ## 常见问题
 

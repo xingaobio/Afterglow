@@ -42,6 +42,11 @@ services:
       # organized 里的符号链接指向宿主机路径(如 /media/xin/PHOTOS/...)；没有这一行，
       # 链接在容器内是悬空的，Immich 会扫描到 0 个文件。mode 为 hardlink/copy 时可删掉。
       - ${PHOTO_SOURCE}:${PHOTO_SOURCE}:ro,rslave
+      # AFTERGLOW [3c]: 整理目录与导出目录也按"宿主机相同路径"各挂一份(只读)。
+      # 这样 afterglow 里记录的宿主机路径 == 容器内路径: 外部图库的 import path、按路径查找资产、
+      # 以及 organized 里指向导出图(<名字>_edit.jpg → output/exports/...)的符号链接都能对上。
+      - ${AFTERGLOW_ORGANIZED}:${AFTERGLOW_ORGANIZED}:ro
+      - ${AFTERGLOW_OUTPUT}:${AFTERGLOW_OUTPUT}:ro
     env_file:
       - .env
     ports:

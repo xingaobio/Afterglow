@@ -200,7 +200,7 @@ def cmd_run(cfg: Config, args: argparse.Namespace) -> int:
     finally:
         ctx.close()
     _console().print(f"运行 #{report.run_id} 完成: 成功 {report.ok}，失败 {report.failed}，跳过 {report.skipped}")
-    return EXIT_FAILED if report.failed else EXIT_OK
+    return _run_exit(report)
 
 
 def cmd_watch(cfg: Config, args: argparse.Namespace) -> int:
@@ -286,7 +286,7 @@ def cmd_retry(cfg: Config, args: argparse.Namespace) -> int:
     finally:
         ctx.close()
     _console().print(f"运行 #{report.run_id} 完成: 成功 {report.ok}，失败 {report.failed}，跳过 {report.skipped}")
-    return EXIT_FAILED if report.failed else EXIT_OK
+    return _run_exit(report)
 
 
 def cmd_bench(rest: list[str]) -> int:
@@ -304,6 +304,13 @@ _HANDLERS = {
 }
 # commands that work without the source directory being present
 _NO_SOURCE = {"setup", "status", "undo", "doctor", "retry"}
+
+
+def _run_exit(report: Any) -> int:
+    aborted = getattr(report, "aborted", [])
+    if aborted:
+        _console().print(f"[red]阶段中止: {', '.join(aborted)}（详见日志）[/red]")
+    return EXIT_FAILED if report.failed or aborted else EXIT_OK
 
 
 def main(argv: list[str] | None = None) -> int:
