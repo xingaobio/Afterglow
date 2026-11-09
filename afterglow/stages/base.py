@@ -19,6 +19,10 @@ STAGE_ORDER: tuple[str, ...] = (
     "backup", "index", "cull", "group", "understand", "process", "merge", "video", "publish",
 )
 
+#: Prerequisite stages that only need to have been *attempted*: a file whose `understand` step failed
+#: (LLM down, bad JSON) still goes through process/merge/video/publish with empty tags (ARCHITECTURE §4).
+SOFT_PREREQUISITES: frozenset[str] = frozenset({"understand"})
+
 Status = Literal["done", "failed", "skipped"]
 
 
@@ -104,7 +108,7 @@ class Stage(ABC):
         The default asks `ctx.state.pending(self.name, limit)`; subclasses add filters (kind, pick…)
         and return `StepOutcome.skipped` from `run` for files they do not handle.
         """
-        return ctx.state.pending(self.name, limit)
+        return ctx.state.pending(self.name, limit, requires=self.requires)
 
     @abstractmethod
     def run(self, ctx: Context, batch: list[FileRecord]) -> list[StepOutcome]:

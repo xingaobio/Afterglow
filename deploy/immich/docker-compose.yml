@@ -1,0 +1,107 @@
+#
+# Afterglow 版 Immich docker-compose.yml
+#
+# 基于官方文件:
+#   https://github.com/immich-app/immich/releases/latest/download/docker-compose.yml
+# 官方安装说明: https://docs.immich.app/install/docker-compose
+#
+# 重要提示(请读):
+#   * 写这个文件时无法下载到当前官方 compose(GitHub release 下载被拦截)，因此本文件里
+#     "非 Afterglow 部分" (server / database / valkey 的细节) 是按 Immich 近期版本的结构手写的，
+#     **没有逐行对照当前官方文件**。install.sh 会把当前官方 docker-compose.yml / example.env /
+#     hwaccel.ml.yml 下载到 /opt/immich/official/ 供你 diff；database 和 valkey 的镜像标签
+#     (包含 pgvector/VectorChord 版本，最容易出问题的部分)直接取自官方文件，写入 .env 的
+#     IMMICH_DB_IMAGE / IMMICH_VALKEY_IMAGE，不在这里硬编码。
+#   * 升级 Immich 前，务必先 diff 官方文件。
+#
+# 标有 "AFTERGLOW" 的注释是相对官方文件的改动，共 5 处(+[3b]):
+#   [1] machine-learning 使用 -cuda 镜像 + GPU 设备预留
+#   [2] server 额外只读挂载 Afterglow 整理后的目录树(外部图库) /mnt/afterglow
+#   [3] server 额外只读挂载原始照片 /mnt/source，另以宿主机同路径再挂一份 [3b] 让 symlink 不悬空
+#   [4] Postgres 数据目录放在本地 SSD: ${DB_DATA_LOCATION}
+#   [5] 镜像标签 IMMICH_VERSION 默认跟 example.env (官方示例为 v3 )
+#
+
+name: immich
+
+services:
+  immich-server:
+    container_name: immich_server
+    image: ghcr.io/immich-app/immich-server:${IMMICH_VERSION:-v3}
+    volumes:
+      # 官方: 上传目录。Afterglow 只用外部图库，所以这里基本是空的，但 Immich 仍要求它存在。
+      - ${UPLOAD_LOCATION}:/data
+      - /etc/localtime:/etc/localtime:ro
+      # AFTERGLOW [2]: 整理后的目录树(symlink/hardlink/copy)，在 Immich 里创建外部图库，
+      # import path = /mnt/afterglow。:ro 保证 Immich 永远不会改动它。
+      - ${AFTERGLOW_ORGANIZED}:/mnt/afterglow:ro
+      # AFTERGLOW [3]: 原始照片根目录，只读。
+      # rslave = 移动硬盘在容器启动之后才挂载/换盘时，容器内也能看到新的挂载(不然会是空目录)。
+      - ${PHOTO_SOURCE}:/mnt/source:ro,rslave
+      # AFTERGLOW [3b]: 再以"宿主机相同的绝对路径"挂一份。organize.mode = "symlink"(默认)时，
+      # organized 里的符号链接指向宿主机路径(如 /media/xin/PHOTOS/...)；没有这一行，
+      # 链接在容器内是悬空的，Immich 会扫描到 0 个文件。mode 为 hardlink/copy 时可删掉。
+      - ${PHOTO_SOURCE}:${PHOTO_SOURCE}:ro,rslave
+    env_file:
+      - .env
+    ports:
+      - '2283:2283'
+    depends_on:
+      - redis
+      - database
+    restart: always
+    healthcheck:
+      disable: false
+
+  immich-machine-learning:
+    container_name: immich_machine_learning
+    # AFTERGLOW [1]: 官方 CPU 镜像是 ${IMMICH_VERSION:-release}，CUDA 加速只需加 "-cuda" 后缀。
+    # 来源: https://docs.immich.app/features/ml-hardware-acceleration
+    image: ghcr.io/immich-app/immich-machine-learning:${IMMICH_VERSION:-v3}-cuda
+    # AFTERGLOW [1]: GPU 设备预留。官方文档的两种做法等价:
+    #   (a) extends: { file: hwaccel.ml.yml, service: cuda }   (需要把 hwaccel.ml.yml 放在同目录)
+    #   (b) 把官方文档里的 CUDA 块直接写进服务里(Unraid/Portainer 等不支持多 compose 文件的平台)。
+    # 这里用 (b)，少一个文件。块内容逐字取自上述文档页面。
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities:
+                - gpu
+    volumes:
+      - model-cache:/cache
+    env_file:
+      - .env
+    restart: always
+    healthcheck:
+      disable: false
+
+  redis:
+    container_name: immich_redis
+    # 官方文件里的 valkey/redis 镜像(含 digest)由 install.sh 从官方 compose 提取写入 .env。
+    image: ${IMMICH_VALKEY_IMAGE:?IMMICH_VALKEY_IMAGE 未设置，见 .env / install.sh 的说明}
+    restart: always
+    healthcheck:
+      test: redis-cli ping || exit 1
+
+  database:
+    container_name: immich_postgres
+    # 官方文件里的 postgres(VectorChord) 镜像由 install.sh 从官方 compose 提取写入 .env。
+    image: ${IMMICH_DB_IMAGE:?IMMICH_DB_IMAGE 未设置，见 .env / install.sh 的说明}
+    environment:
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_USER: ${DB_USERNAME}
+      POSTGRES_DB: ${DB_DATABASE_NAME}
+      POSTGRES_INITDB_ARGS: '--data-checksums'
+    volumes:
+      # AFTERGLOW [4]: 数据库放本地 SSD(不要放网络盘/移动硬盘)。路径在 .env 里的 DB_DATA_LOCATION。
+      - ${DB_DATA_LOCATION}:/var/lib/postgresql/data
+    shm_size: 128mb
+    restart: always
+    healthcheck:
+      disable: false
+
+volumes:
+  model-cache:

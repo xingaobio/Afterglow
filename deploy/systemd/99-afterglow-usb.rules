@@ -1,0 +1,16 @@
+# Afterglow — 插入存储盘时触发 afterglow-run@<卷标>.service
+# 安装: sudo cp 99-afterglow-usb.rules /etc/udev/rules.d/ && sudo udevadm control --reload
+# 查看设备属性: udevadm info --query=property --name=/dev/sdX1 | grep -E "ID_BUS|ID_FS_"
+#
+# 说明:
+#  * 使用 ID_FS_LABEL_ENC(已把空格等转成 \xNN)而不是 ID_FS_LABEL，这样含空格的卷标也是合法的 systemd 实例名。
+#  * `--no-block`: udev 里不能等待服务结束。afterglow-run@ 自己会等挂载完成。
+#  * 外置硬盘经常 removable=0，所以用 ID_BUS=="usb" 判断而不是 removable 属性。
+
+# 规则 A (推荐): 只对指定卷标生效。把 PHOTOS 改成你的移动硬盘卷标，然后取消注释:
+#ACTION=="add", SUBSYSTEM=="block", ENV{ID_FS_USAGE}=="filesystem", ENV{ID_FS_LABEL}=="PHOTOS", \
+#  RUN+="/usr/bin/systemctl --no-block start afterglow-run@%E{ID_FS_LABEL_ENC}.service"
+
+# 规则 B (默认启用): 任何有卷标的 USB 文件系统都触发。若你经常插别的 U 盘，请改用规则 A。
+ACTION=="add", SUBSYSTEM=="block", ENV{ID_BUS}=="usb", ENV{ID_FS_USAGE}=="filesystem", ENV{ID_FS_LABEL_ENC}=="?*", \
+  RUN+="/usr/bin/systemctl --no-block start afterglow-run@%E{ID_FS_LABEL_ENC}.service"

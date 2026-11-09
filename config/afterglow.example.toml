@@ -1,0 +1,89 @@
+# Afterglow 示例配置：复制到 ~/.config/afterglow/afterglow.toml 后按需修改。
+
+[paths]
+source    = "/media/xin/PHOTOS"            # 移动硬盘挂载点，只读，程序绝不写入
+work      = "/data/afterglow"              # SSD 工作目录：afterglow.db、previews/、cache/、logs/
+output    = "/data/afterglow/output"       # 导出、增强、合成、代理视频的输出目录
+organized = "/data/afterglow/library"      # 整理后的目录树（Immich 外部图库指向这里）
+backup    = "/media/xin/BACKUP"            # 备份盘挂载点；空字符串表示不备份
+include_ext = ["cr2", "cr3", "nef", "arw", "dng", "raf", "orf", "rw2", "jpg", "jpeg", "heic", "png", "mp4", "mov", "avi", "mts"]  # 处理的扩展名
+
+[organize]
+mode       = "symlink"      # 整理方式：symlink | hardlink | copy | move（move 需先通过备份校验）
+layout     = "{year}/{year}-{month:02d} {event}/{basename}"  # 目录树布局模板
+culled_dir = "_culled"      # 非精选（模糊、连拍备选等）存放的子目录
+duplicates_dir = "_duplicates"  # 完全重复文件存放的子目录
+
+[cull]
+sharpness_min      = 35.0   # 清晰度（0-100）低于此值视为模糊
+burst_gap_seconds  = 2.0    # 同机身相邻拍摄间隔不超过此秒数视为同一连拍
+keep_per_burst     = 1      # 每组连拍保留的张数
+reject_eyes_closed = true   # 是否淘汰闭眼照片
+min_long_edge      = 800    # 短边小于此像素的图（截图、缩略图）直接淘汰
+
+[events]
+gap_hours = 4.0             # 拍摄间隔超过此小时数则开始新事件
+gps_km    = 5.0             # GPS 位置跳变超过此公里数则开始新事件
+min_photos = 3              # 少于此张数的事件并入当月“零散”
+
+[llm]
+server          = "http://127.0.0.1:8080/v1"  # 视觉模型 llama-server 地址（OpenAI 兼容）
+vision_model    = "qwen3-vl-4b"               # 视觉模型名称
+brain_server    = ""                          # 第二模型地址；空表示事件命名也用视觉模型
+brain_model     = "qwen3.6-35b-a3b"           # 第二模型名称（用于事件命名）
+tag_scope       = "picks"                     # 打标签范围：picks | all
+max_image_edge  = 1024                        # 送入模型的图片长边像素
+concurrency     = 2                           # 并发请求数（对应 llama-server 的 -np）
+timeout_seconds = 120                         # 单次请求超时秒数
+language        = "zh"                        # 描述与事件名的语言
+
+[lumen]
+source_dir     = "/opt/lumen-raw"                      # LUMEN RAW 源码目录
+python         = "/opt/lumen-raw/.venv-linux/bin/python"  # LUMEN 使用的 Python 解释器
+models_dir     = "/data/afterglow/models/lumen"        # LUMEN 模型目录（LUMEN_MODELS）
+library_db     = "/data/afterglow/lumen-library.db"    # LUMEN 自己的目录库（LUMEN_LIBRARY）
+compute        = "auto"                                # 计算设备：auto | cuda | cpu
+export_format  = "jpg"                                 # 导出格式
+export_quality = 92                                    # 导出 JPEG 质量
+export_long_edge = 0                                   # 导出长边像素；0 表示原始分辨率
+enhance        = "auto"                                # AI 增强：off | auto | all
+enhance_scale  = 2                                     # 超分倍数
+restart_every  = 200                                   # 每处理 N 次调用重启 LUMEN 子进程，防止内存增长
+
+[process]
+straighten                = true                       # 是否自动水平校正
+straighten_min_confidence = 0.6                        # 校正所需的最低置信度
+straighten_max_degrees    = 5.0                        # 允许校正的最大角度
+crops                     = ["3:2", "4:5", "16:9"]     # 额外裁切比例；空列表表示不裁切
+scope                     = "picks"                    # 处理范围：picks | all
+
+# 场景 → LUMEN 预设名；空字符串表示只做自动调色
+[process.style_presets]
+landscape = ""   # 风光
+portrait  = ""   # 人像
+night     = ""   # 夜景
+default   = ""   # 其他
+
+[video]
+proxy_height = 1080             # 代理视频高度（像素）
+encoder      = "h264_nvenc"     # 编码器；不可用时自动回退 libx264
+keyframes    = 5                # 每个视频抽取的关键帧数
+timelapse_min_frames = 60       # 连续等间隔不少于此张数时生成延时视频
+
+[immich]
+url     = "http://127.0.0.1:2283"   # Immich 服务地址
+api_key = ""                        # Immich API key；空表示跳过 Immich 同步
+external_library_name = "Afterglow" # 外部图库名称
+pause_ml_during_gpu_stages = true   # GPU 阶段运行时暂停 Immich 机器学习任务
+
+[backup]
+tool   = "rsync"            # 备份工具
+verify = "size"             # 校验方式：size | sha256
+require_before_move = true  # 移动原图前必须先通过备份校验
+
+[gpu]
+lock_file = "/data/afterglow/gpu.lock"  # GPU 互斥锁文件
+
+[run]
+batch_size = 200            # 每批处理的文件数
+workers    = 4              # CPU 并行线程数（索引、哈希、EXIF）

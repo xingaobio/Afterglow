@@ -1,0 +1,11 @@
+[Unit]
+Description=Afterglow nightly run at 03:17
+
+[Timer]
+OnCalendar=*-*-* 03:17:00
+# 机器当时关机/睡眠 → 开机后补跑一次
+Persistent=true
+Unit=afterglow-nightly.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,18 @@
+# Afterglow — `afterglow watch`：挂载出现 / 定时 → 增量 run。
+# 与 afterglow-nightly / afterglow-run@ 可同时存在：GPU 阶段由 gpu.lock_file 文件锁互斥。
+[Unit]
+Description=Afterglow watch (incremental pipeline runs)
+Wants=afterglow-llm.service
+After=afterglow-llm.service network.target
+
+[Service]
+Type=simple
+User=@AFTERGLOW_USER@
+# 配置文件: ~/.config/afterglow/afterglow.toml (HOME 由 User= 自动设置)
+ExecStart=/opt/afterglow/.venv/bin/afterglow watch
+Restart=on-failure
+RestartSec=30
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

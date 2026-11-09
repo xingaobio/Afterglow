@@ -1,0 +1,18 @@
+# Afterglow — 模板单元：某个带卷标的盘出现后跑一次 `afterglow run`。
+# 实例名 = udev 传来的卷标(已用 \x20 之类转义，99-afterglow-usb.rules)；%I = 还原后的原始卷标。
+# 手动触发: sudo systemctl start 'afterglow-run@PHOTOS.service'
+# 注意: 实际处理的是 afterglow.toml 里的 paths.source，卷标只用来"等这块盘挂载好"。
+[Unit]
+Description=Afterglow run after mount of "%I"
+Wants=afterglow-llm.service
+After=afterglow-llm.service local-fs.target
+
+[Service]
+Type=oneshot
+User=@AFTERGLOW_USER@
+# 等桌面环境(udisks)把这块盘挂载好，最多 3 分钟；没等到就放弃(不算故障，下次插盘再来)。
+ExecStartPre=/usr/bin/timeout 180 /bin/bash -c 'until findmnt -rn -S "LABEL=$$1" >/dev/null; do sleep 2; done' _ %I
+ExecStart=/opt/afterglow/.venv/bin/afterglow run
+SuccessExitStatus=2
+Nice=10
+TimeoutStartSec=infinity

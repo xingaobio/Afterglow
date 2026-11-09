@@ -1,0 +1,32 @@
+# Afterglow — llama-server，可选的 "大脑" 模型 Qwen3.6-35B-A3B (MoE，端口 8081)，只用来给事件命名。
+# 与视觉模型【互斥】(Conflicts=)：8 GB 显存放不下两个。启动本服务会自动停掉 afterglow-llm，
+# 由 afterglow 在需要事件命名时 `systemctl start afterglow-brain`，用完再 `systemctl start afterglow-llm`。
+# 要让非 root 用户能这样做，需要 polkit/sudoers 规则，见 README.md。
+#
+# --n-cpu-moe 99: 所有层的 MoE 专家权重留在 CPU 内存(约 22 GB 放 RAM，注意力等留 GPU)，8 GB 显存也能跑；
+#   慢，但事件命名只有几百次调用。语义: "keep the MoE weights of the first N layers in the CPU"
+#   (来源: llama-server README 帮助文本，见 afterglow-llm.service 注释里的链接)。
+# --alias 必须等于 afterglow.toml 的 [llm].brain_model；[llm].brain_server 填 http://127.0.0.1:8081/v1。
+# 如果只用文本命名事件、不需要看图，可以删掉 --mmproj 一行省约 1 GB 显存。
+[Unit]
+Description=Afterglow llama-server (brain, Qwen3.6-35B-A3B MoE)
+After=network.target
+Conflicts=afterglow-llm.service
+
+[Service]
+Type=simple
+User=@AFTERGLOW_USER@
+ExecStart=/opt/llama.cpp/build/bin/llama-server \
+  -m /data/afterglow/models/gguf/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf \
+  --mmproj /data/afterglow/models/gguf/mmproj-Qwen3.6-35B-A3B-F16.gguf \
+  --alias qwen3.6-35b-a3b \
+  -ngl 99 --n-cpu-moe 99 -c 16384 -np 1 -fa on --jinja \
+  --host 127.0.0.1 --port 8081
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=900
+LimitMEMLOCK=infinity
+
+[Install]
+# 默认不 enable，按需启动。
+WantedBy=multi-user.target
