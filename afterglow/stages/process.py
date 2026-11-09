@@ -11,7 +11,9 @@ import numpy as np
 from PIL import Image
 
 from afterglow.config import IMAGE_KINDS
+from afterglow.integrations.llm import LLMClient
 from afterglow.stages.base import FileRecord, Stage, StepOutcome
+from afterglow.stages.understand import resized_jpeg
 from afterglow.util.images import (
     crop_ratio,
     from_rgb_array,
@@ -26,6 +28,9 @@ if TYPE_CHECKING:
     from afterglow.context import Context
 
 log = logging.getLogger(__name__)
+
+#: LUMEN slider ranges (lumen/commands.py CHANGES): exposure in EV, everything else -100…100.
+SLIDER_RANGE: dict[str, tuple[float, float]] = {"exposure": (-5.0, 5.0), "*": (-100.0, 100.0)}
 
 DENOISE_ISO = 3200
 SMALL_LONG_EDGE = 3000
@@ -97,19 +102,89 @@ class Process(Stage):
         style = description.get("style_preset") or "default"
         presets = cfg.process.style_presets
         preset = presets.get(style) or presets.get("default") or ""
+        grade: dict[str, Any] | None = None
         # Edits live in the lumen-cli subprocess; a restart between calls would drop them, so the
-        # whole open -> auto -> preset -> export chain runs inside one sequence (no restart inside).
+        # whole open -> auto -> preset -> grade -> export chain runs inside one sequence.
         sequence = getattr(lumen, "sequence", None)
         with sequence() if callable(sequence) else nullcontext():
             lumen.open(rec.path)
             lumen.auto_tone(rec.path)
             if preset:
                 lumen.apply_preset(rec.path, preset)
+            grade = self._grade(ctx, rec, description)
             lumen.export(rec.path, str(out), cfg.lumen.export_quality, cfg.lumen.export_long_edge or None)
         if not out.exists():
             raise FileNotFoundError(f"LUMEN 没有写出导出文件: {out}")
-        ctx.state.add_output("export", str(out), file_id=rec.id, params={"preset": preset or None, "style": style})
+        ctx.state.add_output(
+            "export", str(out), file_id=rec.id, params={"preset": preset or None, "style": style, "grade": grade},
+        )
         return out
+
+    def _grade(self, ctx: Context, rec: FileRecord, description: dict[str, Any]) -> dict[str, Any] | None:
+        """Natural-language grading (§11.2) on top of the automatic adjustment; None when not applied.
+
+        LUMEN's edit.apply takes *final* slider values, not increments.  So the model looks at LUMEN's
+        own rendering of the photo as it stands (after auto tone / preset), proposes small deltas, and
+        those deltas - scaled by grade.strength - are added to the current values before being applied.
+        Any failure leaves the automatic result untouched.
+        """
+        cfg = ctx.config
+        lumen = ctx.lumen
+        grade_fn = getattr(ctx.llm, "grade", None)
+        get_edits = getattr(lumen, "get_edits", None)
+        scene = description.get("scene")
+        if (
+            cfg.grade.mode != "llm"
+            or cfg.grade.strength <= 0
+            or not callable(grade_fn)
+            or not callable(get_edits)
+            or not scene
+            or scene not in cfg.grade.scenes
+        ):
+            return None
+        try:
+            current = ((get_edits(rec.path) or {}).get("state") or {}).get("adjustments")
+            if not isinstance(current, dict):
+                raise ValueError("LUMEN did not report the current adjustments")
+            image = self._graded_view(ctx, rec)
+            result = grade_fn(image, scene, description.get("caption") or "", cfg.grade.instruction, cfg.llm.language)
+            # the client already normalises; re-clamp so any LLM double (or future client) is safe too
+            deltas = LLMClient.normalise_grade((result or {}).get("adjustments"))
+            if not deltas:
+                return None
+            scale = cfg.grade.strength / 100.0
+            final: dict[str, float] = {}
+            for key, delta in deltas.items():
+                base = current.get(key)
+                base = float(base) if isinstance(base, int | float) and not isinstance(base, bool) else 0.0
+                low, high = SLIDER_RANGE.get(key, SLIDER_RANGE["*"])
+                value = max(low, min(high, base + delta * scale))
+                final[key] = round(value, 2) if key == "exposure" else round(value)
+            lumen.apply_edits(rec.path, {"adjustments": final}, amount=100, label="afterglow grade")
+            return {
+                "adjustments": deltas, "applied": final, "reason": str((result or {}).get("reason") or ""),
+                "strength": cfg.grade.strength,
+            }
+        except Exception as exc:
+            log.warning("自然语言调色未应用，保留自动调色结果: %s (%s: %s)", rec.path, type(exc).__name__, exc)
+            log.debug("grade traceback", exc_info=True)
+            return None
+
+    @staticmethod
+    def _graded_view(ctx: Context, rec: FileRecord) -> bytes:
+        """What the model should judge: LUMEN's rendering with the edits so far; else the camera preview."""
+        edge = ctx.config.llm.max_image_edge
+        render = getattr(ctx.lumen, "render_preview", None)
+        if callable(render):
+            try:
+                data = render(rec.path, edge)
+                if data:
+                    return data
+            except Exception as exc:
+                log.debug("render_preview failed, using the stored preview: %s", exc)
+        if not rec.preview_path:
+            raise FileNotFoundError("no preview image for grading")
+        return resized_jpeg(rec.preview_path, edge)
 
     def _straighten(
         self, ctx: Context, rec: FileRecord, exported: Path, rgb: np.ndarray

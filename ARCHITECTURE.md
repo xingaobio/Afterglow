@@ -558,14 +558,15 @@ class ImmichClient:                       # httpx，header x-api-key；所有方
 - Immich 的人脸识别要在外部图库扫描后跑一段时间；首次运行可能 0 人，属正常，日志提示下次运行再建。
 
 ### 11.2 自然语言调色（`process` 阶段导出链内）
-- `grade.mode = "auto"` → 行为不变。`"llm"` 且该文件 `descriptions.scene ∈ grade.scenes` 且 LLM 可用 → 在 `auto_tone` 之后、`export` 之前：
-  1. `ctx.llm.grade(image_jpeg, scene, caption, instruction, language) -> dict`：让视觉模型看预览图并返回 JSON
-     `{"adjustments": {exposure, contrast, highlights, shadows, whites, blacks, temperature, tint, vibrance, saturation, dehaze, clarity}, "reason": str}`；只保留这些键。
-  2. 客户端钳制：`exposure` ∈ [-1.0, 1.0]（EV），其余 ∈ [-40, 40]，非数字丢弃；全为 0 或空 → 不调用 LUMEN。
-  3. `ctx.lumen.apply_edits(path, {"adjustments": adj}, amount=grade.strength)`（`LumenCLI.apply_edits` 增加 `amount` 参数，映射到 LUMEN `edit.apply` 的 `amount`）。
-- LLM 或 `apply_edits` 失败只告警，继续导出自动调色的结果（不让文件 failed）。
-- `outputs(kind="export").params` 增加 `grade: {"adjustments": …, "reason": …, "strength": …}` 或 `grade: null`。
-- 整条链仍在 `lumen.sequence()` 内。LLM 调用放在进入 sequence **之前**（先拿到参数），避免长时间占着 LUMEN 锁。
+> 审核修正：LUMEN 的 `edit.apply` 接收的是**最终滑块值，不是增量**。直接把模型给的小幅修正发过去会覆盖自动调色的结果，所以改为“读当前值 → 加增量 → 写最终值”。
+
+- `grade.mode = "auto"` → 行为不变。`"llm"` 且该文件 `descriptions.scene ∈ grade.scenes`、`grade.strength > 0` 且 LLM 可用 → 在 `auto_tone`（及可选 preset）之后、`export` 之前，仍在 `lumen.sequence()` 内：
+  1. `ctx.lumen.get_edits(path)["state"]["adjustments"]` 取当前滑块值；取不到 → 不调色。
+  2. `ctx.lumen.render_preview(path, llm.max_image_edge)` 取 LUMEN 按当前编辑渲染的 JPEG（失败则退回索引阶段的预览图），模型看到的就是“自动调色后的样子”。
+  3. `ctx.llm.grade(image_jpeg, scene, caption, instruction, language)` 返回 `{"adjustments": {…增量…}, "reason": str}`；只保留十二个键（`GRADE_KEYS`），钳制：`exposure` ∈ [-1.0, 1.0] EV，其余 ∈ [-40, 40]，丢弃非数字和 0。
+  4. 最终值 = 当前值 + 增量 × `strength`/100，钳到 LUMEN 滑块范围（exposure ±5，其余 ±100）→ `ctx.lumen.apply_edits(path, {"adjustments": 最终值}, amount=100)`。
+- 任一步失败只告警，继续导出自动调色的结果（文件不 failed）。
+- `outputs(kind="export").params.grade` = `{"adjustments": 增量, "applied": 最终值, "reason", "strength"}` 或 `null`。
 
 ### 11.3 运行报告与通知（`afterglow/report.py`）
 - `State.run_summary(run_id) -> dict`：该次 run 的起止时间、各阶段 ok/failed/skipped（从 `runs` 与 `steps.updated_at` 落在本次 run 时间窗内统计）、失败文件清单（path、stage、error，最多 200 条）、库总览（`stats()`）、本次新增 outputs 按 kind 计数、本次新建的 event 组名。
@@ -573,3 +574,10 @@ class ImmichClient:                       # httpx，header x-api-key；所有方
 - `report.write(ctx, run_id) -> Path`：写 `paths.reports/run-<id>-<YYYYMMDD-HHMM>.html`，并更新 `latest.html`（复制，不用链接）。
 - `report.notify(ctx, path, summary)`：`email_to` 与 `smtp_host` 非空 → `smtplib.SMTP` + STARTTLS，密码取 `os.environ[smtp_password_env]`（缺失则告警不发），主题 `Afterglow 运行 #<id>：成功 N，失败 M`，HTML 正文即报告；`notify_command` 非空 → `subprocess.run([cmd, str(path)], timeout=60)`（`shlex.split` 解析，不用 shell）。任何通知失败只告警。
 - CLI：`run` / `retry` 结束后若 `report.enabled` 且非 dry-run → `write` + `notify`，并打印报告路径；新子命令 `afterglow report [--run ID]` 重新生成。`watch` 的每次运行同样生成。
+
+### 11.4 审核中补充的行为规则
+- **事件未命名则暂不发布**：目录名包含事件名，所以 `publish` 跳过所属事件还没有名字的文件（step 记 `skipped`，原因“等待事件命名”），下次运行再放，避免改名后留下两份。没有任何精选的事件由 `understand` 在收尾时命名为 GPS 地名或“未分类”。
+- **增量分组**：后来的照片并入时间上相邻（≤ `gap_hours`）的已有事件，或当月的“零散”组（`State.add_group_members`）。
+- **源盘未挂载保护**：`index` 扫描到 0 个文件而目录库里有文件时直接报错，不标记缺失；阶段中止时 `afterglow run` 退出码为 2。
+- **路径反查**：`publish` 把 `organized 路径 → file id` 记入 `kv["organized:<path>"]`，供 `people` 从 Immich 资产路径找回文件（`copy_picks` 模式下精选是实体副本，无法靠解析符号链接）。
+- **Immich 挂载**：compose 把 source、organized、output 都按宿主机相同路径只读挂入容器，Afterglow 记录的路径在容器内同样有效；端口只绑定 127.0.0.1。

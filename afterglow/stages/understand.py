@@ -19,6 +19,9 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+#: Name of events without a single pick to describe.
+UNSORTED = "未分类"
+
 SCENES = {"landscape", "portrait", "street", "night", "food", "document", "screenshot", "pet", "event", "other"}
 STYLES = {"landscape", "portrait", "night", "default"}
 MAX_TAGS = 8
@@ -170,6 +173,11 @@ class Understand(Stage):
                 continue
             captions = [d["caption"] for _, d in described if d and d.get("caption")][:EVENT_CAPTIONS]
             if not captions:
+                if final and not picks:
+                    # Nothing in this event will ever be described (no picks): give it a plain,
+                    # permanent name so `publish` can place its files.
+                    state.set_group_name(group["id"], sanitize_name(_place_name(group.get("meta") or {}) or UNSORTED))
+                    named += 1
                 continue
             date = (group.get("started_at") or (recs[0].captured_at if recs else "") or "")[:10]
             try:

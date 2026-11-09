@@ -9,6 +9,7 @@ import time
 from typing import TYPE_CHECKING
 
 from afterglow import pipeline
+from afterglow import report as report_mod
 
 if TYPE_CHECKING:
     from afterglow.context import Context
@@ -64,6 +65,9 @@ def watch(ctx: Context, interval: float = 60, stop: threading.Event | None = Non
                     try:
                         report = pipeline.run(ctx)
                         log.info("流水线完成: 成功 %d，失败 %d，跳过 %d", report.ok, report.failed, report.skipped)
+                        path = report_mod.finish_run(ctx, report.run_id)
+                        if path is not None:
+                            log.info("报告: %s", path)
                     except Exception:
                         log.exception("pipeline run failed")
                     last_run = time.monotonic()

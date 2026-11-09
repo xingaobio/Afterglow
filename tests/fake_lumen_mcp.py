@@ -11,7 +11,10 @@ import os
 import sys
 from pathlib import Path
 
-TOOLS = ["analyze_photos", "open_photo", "auto_tone", "apply_edits", "export_photos", "photo_info", "run_command"]
+TOOLS = [
+    "analyze_photos", "open_photo", "auto_tone", "apply_edits", "export_photos", "photo_info", "run_command",
+    "get_edits", "render_preview",
+]
 COMMANDS = {"photo.export", "edit.preset", "video.timelapse", "library.write_xmp"}
 
 
@@ -66,7 +69,24 @@ def call_tool(name: str, args: dict) -> dict:
         return ok({"count": len(photos), "photos": photos, "bursts": bursts})
     if name == "open_photo":
         return ok({"name": Path(args["path"]).name, "width": 6000, "height": 4000})
-    if name in ("auto_tone", "apply_edits", "photo_info"):
+    if name == "apply_edits":
+        return ok({"path": args.get("path"), "tool": name, "amount": args.get("amount"),
+                   "changes": args.get("changes"), "label": args.get("label")})
+    if name == "get_edits":
+        return ok({"path": args.get("path"), "state": {"adjustments": {"exposure": 0.5, "contrast": 10}}})
+    if name == "render_preview":
+        import base64
+        import io
+
+        from PIL import Image
+
+        buf = io.BytesIO()
+        Image.new("RGB", (64, 48), (90, 120, 150)).save(buf, "JPEG")
+        result = ok({"path": args.get("path"), "width": 64, "height": 48})
+        result["content"].insert(0, {"type": "image", "data": base64.b64encode(buf.getvalue()).decode(),
+                                     "mimeType": "image/jpeg"})
+        return result
+    if name in ("auto_tone", "photo_info"):
         return ok({"path": args.get("path"), "tool": name})
     if name == "export_photos":
         folder = args["folder"]

@@ -158,3 +158,24 @@ def test_lumen_lib_wraps_modules(tmp_path, monkeypatch):
     assert merge.SEEN == [("panorama", 0, np.float32)]
     for name in [m for m in sys.modules if m == "lumen" or m.startswith("lumen.")]:
         monkeypatch.delitem(sys.modules, name)
+
+
+def test_apply_edits_passes_amount_and_label(tmp_path, monkeypatch):
+    changes = {"adjustments": {"exposure": 0.3, "contrast": 10}}
+    with make_cli(tmp_path, monkeypatch) as cli:
+        default = cli.apply_edits("/a/1.cr3", changes)
+        assert default["amount"] == 100 and default["changes"] == changes and default["label"] is None
+        res = cli.apply_edits("/a/1.cr3", changes, amount=60, label="afterglow grade")
+        assert res["amount"] == 60 and res["label"] == "afterglow grade" and res["changes"] == changes
+        assert cli.apply_edits("/a/1.cr3", changes, amount=999)["amount"] == 150
+        assert cli.apply_edits("/a/1.cr3", changes, amount=-5)["amount"] == 0
+
+
+def test_get_edits_and_render_preview(tmp_path, monkeypatch):
+    cli = make_cli(tmp_path, monkeypatch)
+    try:
+        assert cli.get_edits("/p/a.cr3")["state"]["adjustments"]["exposure"] == 0.5
+        data = cli.render_preview("/p/a.cr3", 4096)
+        assert data[:2] == b"\xff\xd8"
+    finally:
+        cli.close()

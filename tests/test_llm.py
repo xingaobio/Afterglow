@@ -99,3 +99,43 @@ def test_name_event_fallback():
     assert make_client(['{"name": "  "}']).name_event(["a"], "2024-05-01", "Skye") == "Skye"
     assert make_client(['{"name": "///"}']).name_event(["a"], "2024-05-01", None) == "照片"
     assert make_client([500]).name_event(["a"], "2024-05-01", None) == "照片"
+
+
+def test_grade_normalises_and_clamps():
+    from afterglow.integrations.llm import GRADE_KEYS
+
+    reply = json.dumps({
+        "adjustments": {
+            "exposure": 3.456, "contrast": 99, "highlights": -55.6, "shadows": "12.4", "whites": 0,
+            "blacks": "abc", "temperature": 0.2, "tint": None, "vibrance": True, "saturation": 1e999,
+            "dehaze": -40.4, "clarity": 7.5, "sharpness": 30, "hsl": {"red": 1},
+        },
+        "reason": " 压高光 ",
+    })
+    out = make_client([reply]).grade(b"img", "landscape", "海边", "自然")
+    assert out["reason"] == "压高光"
+    adj = out["adjustments"]
+    assert set(adj) <= set(GRADE_KEYS) and len(GRADE_KEYS) == 12
+    assert adj == {"exposure": 1.0, "contrast": 40, "highlights": -40, "shadows": 12, "dehaze": -40, "clarity": 8}
+
+
+def test_grade_exposure_rounding_and_empty():
+    reply = '{"adjustments": {"exposure": -0.456, "contrast": 0.3}, "reason": "x"}'
+    out = make_client([reply]).grade(b"i", "night", "", "")
+    assert out["adjustments"] == {"exposure": -0.46}
+    assert make_client(['{"adjustments": "oops"}']).grade(b"i", "night", "", "") == {"adjustments": {}, "reason": ""}
+    with pytest.raises(LLMError):
+        make_client(["not json", "still not"]).grade(b"i", "night", "", "")
+
+
+def test_grade_prompt_language_and_image():
+    seen: list = []
+    make_client(['{"adjustments": {}}'], seen).grade(b"JPEGDATA", "landscape", "a lake", "natural look", "zh")
+    make_client(['{"adjustments": {}}'], seen).grade(b"JPEGDATA", "landscape", "a lake", "natural look", "en")
+    zh, en = seen[0]["messages"][0]["content"], seen[1]["messages"][0]["content"]
+    assert "调色" in zh and "偏暖" in zh and "洋红" in zh and "JSON" in zh
+    assert "colourist" in en and "warmer" in en and "magenta" in en and "JSON" in en
+    for body in seen:
+        assert body["messages"][1]["content"][0]["type"] == "image_url"
+    assert "a lake" in seen[0]["messages"][1]["content"][1]["text"]
+    assert "natural look" in seen[1]["messages"][1]["content"][1]["text"]

@@ -127,3 +127,42 @@ def test_library_and_tags():
     client.tag_assets("T1", ["A1"])
     client.untag_assets("T1", ["A1"])
     assert client.update_asset("A1", description="d", rating=3)["id"] == "A1"
+
+
+def test_people_pagination_and_shapes():
+    seen = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append(req.url)
+        assert req.url.path == "/api/people" and req.url.params["withHidden"] == "false"
+        if req.url.params["page"] == "1":
+            return httpx.Response(200, json={"people": [{"id": "p1", "name": "A"}], "hasNextPage": True})
+        return httpx.Response(200, json={"people": [{"id": "p2", "name": ""}], "hasNextPage": False})
+
+    assert [p["id"] for p in make(handler).people()] == ["p1", "p2"]
+    assert len(seen) == 2
+    assert make(lambda r: httpx.Response(200, json=[{"id": "x"}])).people(with_hidden=True) == [{"id": "x"}]
+    assert make(lambda r: httpx.Response(200, json={})).people() == []
+
+
+def test_person_assets_follows_next_page():
+    bodies = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        assert req.url.path == "/api/search/metadata"
+        body = json.loads(req.content)
+        bodies.append(body)
+        if body["page"] == 1:
+            block = {"items": [{"id": "a", "originalPath": "/x/a"}], "nextPage": "2"}
+        else:
+            block = {"items": [{"id": "b", "originalPath": "/x/b"}], "nextPage": None}
+        return httpx.Response(200, json={"assets": block})
+
+    items = make(handler).person_assets("P1")
+    assert [i["id"] for i in items] == ["a", "b"]
+    assert bodies[0] == {"personIds": ["P1"], "page": 1, "size": 250} and bodies[1]["page"] == 2
+
+
+def test_person_assets_error():
+    with pytest.raises(ImmichError):
+        make(lambda r: httpx.Response(500)).person_assets("P1")

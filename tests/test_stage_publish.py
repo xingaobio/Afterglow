@@ -221,7 +221,8 @@ class FakeImmich:
         self.calls.append(("libraries",))
         return self.libs
 
-    def create_external_library(self, name, import_paths, owner_id=None):
+    def create_external_library(self, name, import_paths, owner_id=None, exclusion_patterns=None):
+        self.exclusions = exclusion_patterns
         self.calls.append(("create_library", name, tuple(import_paths)))
         return "lib-1"
 
@@ -356,3 +357,20 @@ def test_copy_picks_copies_keepers_and_links_the_rest(tmp_path):
     assert placed["keep.jpg"].read_bytes() == b"keep"
     assert placed["cull.jpg"].is_symlink()
     assert keep.read_bytes() == b"keep" and cull.read_bytes() == b"cull"
+
+
+def test_unnamed_event_is_deferred_until_named(tmp_path):
+    """Files of an event without a name are not placed (no stale folder after the event gets its name)."""
+    ctx = fake_ctx(tmp_path)
+    make_sharp(1).save(ctx.config.paths.source / "u.jpg")
+    rec = add_file(ctx, "u.jpg", sha256="55" * 32, captured_at="2023-07-08T09:00:00.000Z")
+    ctx.state.set_analysis(rec.id, pick=1)
+    gid = ctx.state.create_group("event", [rec.id])
+    run(ctx)
+    assert not list(ctx.config.paths.organized.rglob("u.jpg"))
+    assert ctx.state.steps[(rec.id, "publish")] == "skipped"
+
+    ctx.state.set_group_name(gid, "湖区徒步")
+    run(ctx)
+    assert lib(ctx, "2023", "2023-07 湖区徒步", "u.jpg").is_symlink()
+    assert len(list(ctx.config.paths.organized.rglob("u.jpg"))) == 1

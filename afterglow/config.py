@@ -88,6 +88,11 @@ class Organize:
     culled_dir: str = "_culled"
     duplicates_dir: str = "_duplicates"
 
+    @property
+    def immich_exclusions(self) -> list[str]:
+        """Rejected and duplicate photos stay on disk for undo/inspection but are hidden from Immich."""
+        return [f"**/{d}/**" for d in (self.culled_dir, self.duplicates_dir) if d]
+
 
 @dataclass(frozen=True)
 class Cull:

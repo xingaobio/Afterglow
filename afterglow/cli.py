@@ -68,6 +68,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("retry", parents=[common], help="重试失败的步骤")
     p.add_argument("--stage", required=True, choices=STAGE_ORDER, help="阶段名")
 
+    p = sub.add_parser("report", parents=[common], help="重新生成运行报告（默认最近一次运行）")
+    p.add_argument("--run", type=int, dest="run_id", help="run ID")
+    p.add_argument("--notify", action="store_true", help="同时发送通知")
+
     sub.add_parser("bench", parents=[common], help="模型基准测试（参数透传 scripts/bench_models.py）")
     sub.add_parser("doctor", parents=[common], help="依赖与服务健康检查")
     return parser
@@ -177,7 +181,10 @@ def cmd_setup(cfg: Config, args: argparse.Namespace) -> int:
                 client = ctx.immich
                 if client is None:
                     raise RuntimeError("Immich 客户端不可用")
-                library_id = client.create_external_library(cfg.immich.external_library_name, [str(p.organized)])
+                library_id = client.create_external_library(
+                    cfg.immich.external_library_name, [str(p.organized)],
+                    exclusion_patterns=cfg.organize.immich_exclusions,
+                )
                 ctx.state.set("immich_library_id", library_id)
                 _console().print(f"已创建 Immich 外部图库: {library_id}")
             except Exception as exc:
@@ -197,10 +204,44 @@ def cmd_run(cfg: Config, args: argparse.Namespace) -> int:
     ctx = _make_context(cfg, args, dry_run=args.dry_run)
     try:
         report = pipeline.run(ctx, stages=stages, batch_size=args.batch, only_paths=args.only)
+        _finish_report(ctx, report.run_id, args.dry_run)
     finally:
         ctx.close()
     _console().print(f"运行 #{report.run_id} 完成: 成功 {report.ok}，失败 {report.failed}，跳过 {report.skipped}")
     return _run_exit(report)
+
+
+def _finish_report(ctx: Context, run_id: int, dry_run: bool = False) -> None:
+    """Write + notify the run report and print its path.  Never changes the exit code."""
+    if dry_run or not ctx.config.report.enabled:
+        return
+    from afterglow import report as report_mod
+
+    path = report_mod.finish_run(ctx, run_id)
+    if path is not None:
+        _console().print(f"报告: {path}", soft_wrap=True)
+
+
+def cmd_report(cfg: Config, args: argparse.Namespace) -> int:
+    from afterglow import report as report_mod
+
+    ctx = _make_context(cfg, args)
+    try:
+        run_id = args.run_id if args.run_id is not None else ctx.state.latest_run_id()
+        if run_id is None:
+            _console().print("[red]还没有任何运行记录[/red]")
+            return EXIT_CONFIG
+        try:
+            path = report_mod.write(ctx, run_id)
+        except KeyError as exc:
+            _console().print(f"[red]{exc}[/red]")
+            return EXIT_CONFIG
+        _console().print(f"报告: {path}", soft_wrap=True)
+        if args.notify:
+            report_mod.notify(ctx, path, ctx.state.run_summary(run_id))
+        return EXIT_OK
+    finally:
+        ctx.close()
 
 
 def cmd_watch(cfg: Config, args: argparse.Namespace) -> int:
@@ -283,6 +324,7 @@ def cmd_retry(cfg: Config, args: argparse.Namespace) -> int:
         n = ctx.state.reset_stage(args.stage, only_failed=True)
         _console().print(f"已重置 {n} 个失败步骤 ({args.stage})")
         report = pipeline.run(ctx, stages=[args.stage])
+        _finish_report(ctx, report.run_id)
     finally:
         ctx.close()
     _console().print(f"运行 #{report.run_id} 完成: 成功 {report.ok}，失败 {report.failed}，跳过 {report.skipped}")
@@ -300,10 +342,10 @@ def cmd_bench(rest: list[str]) -> int:
 
 _HANDLERS = {
     "setup": cmd_setup, "run": cmd_run, "watch": cmd_watch, "status": cmd_status,
-    "undo": cmd_undo, "retry": cmd_retry, "doctor": cmd_doctor,
+    "undo": cmd_undo, "retry": cmd_retry, "doctor": cmd_doctor, "report": cmd_report,
 }
 # commands that work without the source directory being present
-_NO_SOURCE = {"setup", "status", "undo", "doctor", "retry"}
+_NO_SOURCE = {"setup", "status", "undo", "doctor", "retry", "report"}
 
 
 def _run_exit(report: Any) -> int:

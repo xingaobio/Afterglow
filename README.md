@@ -91,7 +91,7 @@ deploy/install.sh --skip-immich   # 不装 Docker / NVIDIA Container Toolkit / I
 | `paths.source` | 移动硬盘挂载点，**只读** |
 | `paths.work` / `output` / `organized` | SSD 上的工作目录（数据库、预览、日志）/ 导出物 / 整理后的目录树（Immich 外部图库指向 `organized`） |
 | `paths.backup` | 备份盘挂载点；空字符串 = 不备份 |
-| `organize.mode` | `symlink`（默认）\| `hardlink` \| `copy` \| `move`；`move` 要求先通过备份校验（`backup.require_before_move`） |
+| `organize.mode` | `copy_picks`（默认：精选复制到 SSD，其余建链接）\| `symlink` \| `hardlink` \| `copy` \| `move`；`move` 要求先通过备份校验（`backup.require_before_move`） |
 | `organize.layout` | 目录树模板，默认 `{year}/{year}-{month:02d} {event}/{basename}` |
 | `cull.*` | 清晰度阈值、连拍间隔、是否淘汰闭眼等 |
 | `llm.server` / `vision_model` / `brain_server` / `brain_model` | llama-server 地址与模型名；`vision_model` / `brain_model` 须与 systemd 单元里的 `--alias` 一致；`brain_server` 留空 = 事件命名也用视觉模型 |
@@ -175,6 +175,16 @@ XMP 附属文件写在 `output/xmp/` 下，**不会**写到原图旁边。`organ
 
 撤销：`afterglow undo --last --dry-run` 先看清单，再去掉 `--dry-run`。按 `undo_log` 倒序：`move` 移回；`symlink` / `hardlink` / `copy` / `write_file` 删除目标；`mkdir` 仅在目录为空时删除；`immich_*` 调用对应的删除 / 还原。每条成功后标记 `undone`。原图不会被改动，所以最坏情况下也只需删掉输出目录重来。
 
+## v0.2 新增
+
+- **精选复制到 SSD（默认）**：`organize.mode = "copy_picks"`。精选照片（连同调色导出图）在 SSD 上有实体副本，拔掉移动硬盘也能看；淘汰和重复的照片只建符号链接。原图始终不动。
+- **人物相册**（阶段 `people`）：读取 Immich 的人脸识别结果，给每个人建一个相册，放入其质量分最高的若干张精选（`[people]`）。先在 Immich 网页里给人物起名字；没起名的默认跳过。人脸识别要在图库扫描后跑一段时间，第一次运行可能还没有人物，下次运行会补上。
+- **自然语言调色**（`[grade]`）：在 LUMEN 自动调色之后，把 LUMEN 渲染出的效果图交给视觉模型，按你写的 `instruction`（例如“自然、通透，肤色准确”）给出小幅修正，再叠加到当前滑块值上。`strength` 控制应用多少；`mode = "auto"` 关闭这一步。每张图多一次模型调用，`process` 阶段会明显变慢。
+- **运行报告与通知**（`[report]`）：每次运行结束在 `work/reports/` 生成一页 HTML（`latest.html` 始终是最新一份）：各阶段成功/失败数、精选与淘汰统计、新事件、失败清单、磁盘占用。可选发邮件（SMTP 密码从环境变量读）或调用自定义命令。`afterglow report` 可重新生成。
+- **淘汰照片不进 Immich**：外部图库创建时排除 `_culled/` 和 `_duplicates/`，Immich 里只看到精选；这些文件仍在目录树里，随时可以翻回来。
+- **SSD 空间提醒**：`copy_picks` 会把精选原图复制一份。如果精选占 1 TB 素材的三成，就是约 300 GB，再加上导出图、预览缓存和 Immich 缩略图，1 TB SSD 会比较紧。空间不够时改回 `symlink`。
+- **Immich 只在本机可见**：端口绑定 `127.0.0.1:2283`。想让家里其他设备访问，改 `deploy/immich/docker-compose.yml` 里标注 `AFTERGLOW [6]` 的那一行。
+
 ## 尚未在真机验证的内容（首次部署请留意）
 
 本仓库的代码在沙箱里只能对着假的 LUMEN / LLM / Immich 测试（186 个单元测试通过，合成照片的端到端冒烟测试通过，`undo` 验证过原图字节不变）。以下内容**没有**在真实机器上跑过，第一次部署时请对照检查：
@@ -183,10 +193,11 @@ XMP 附属文件写在 `output/xmp/` 下，**不会**写到原图旁边。`organ
 2. **Immich API 端点**：客户端按 v1.1xx–v2 的 `/api/jobs`、`/api/search/metadata`、`/api/albums`、`/api/tags` 写成，并对 v3 可能的 `/api/queues` 做了回退；`deploy/immich/docker-compose.yml` 没有和官方最新文件逐行比对。`install.sh` 会把官方 compose 下载到 `/opt/immich/official/` 供对照。
 3. **模型校验和**：`deploy/models/models.lock` 里四个 GGUF 的 sha256 是 `TODO-verify-on-first-download`，`download.sh` 首次下载后会写回，之后每次校验。
 4. **systemd / udev**：单元文件和 udev 规则只做了语法检查（`systemd-analyze verify`），没有在真机触发过。
-5. **Immich 是否跟随符号链接**：默认 `organize.mode = "symlink"`，compose 已把原图目录、整理目录、导出目录按宿主机相同路径只读挂进容器，链接在容器内不会悬空；但 Immich 外部图库对符号链接的扫描行为没有实测。若扫描到 0 个文件，把 `organize.mode` 改成 `copy`（多占一份空间）。
+5. **Immich 是否跟随符号链接**：默认的 `copy_picks` 模式下精选是实体文件，不受影响；淘汰/重复照片和 `symlink` 模式用的是符号链接，compose 已把原图目录、整理目录、导出目录按宿主机相同路径只读挂进容器，链接在容器内不会悬空；但 Immich 外部图库对符号链接的扫描行为没有实测。若这些链接在 Immich 里看不到，把 `organize.mode` 改成 `copy`（多占一份空间）。
 6. **35B“大脑”模型不会自动切换**：`afterglow-brain.service` 与 `afterglow-llm.service` 互斥，目前需要手动 `systemctl start`；`llm.brain_server` 留空时事件命名直接用 4B 模型。
 7. **导出图不在撤销范围内**：`undo` 还原目录树、XMP 和 Immich 的改动；`output/` 下的导出、裁切、增强文件是可再生的产物，需要时直接删除该目录。
-8. **RTX 2000 的实际速度**：所有耗时都是估算，请用 `afterglow bench` 实测。
+8. **人物相册与自然语言调色**：Immich 的人物接口（`/api/people`、按 `personIds` 搜索）和 LUMEN 的 `get_edits` / `render_preview` / `apply_edits` 调用都只对着假服务测过。建议先用 `afterglow run --stages process --only 一张照片` 看 `output/exports/` 的效果，再决定 `grade.strength`。
+9. **RTX 2000 的实际速度**：所有耗时都是估算，请用 `afterglow bench` 实测。
 
 ## 常见问题
 

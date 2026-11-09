@@ -79,8 +79,15 @@ class ImmichClient:
         return data if isinstance(data, list) else []
 
     # POST /api/libraries {name, ownerId, importPaths}  (docs: Libraries -> createLibrary) -> {id, ...}
-    def create_external_library(self, name: str, import_paths: list[str], owner_id: str | None = None) -> str:
-        body = {"name": name, "ownerId": owner_id or self._my_user_id(), "importPaths": list(import_paths)}
+    def create_external_library(
+        self, name: str, import_paths: list[str], owner_id: str | None = None,
+        exclusion_patterns: list[str] | None = None,
+    ) -> str:
+        body: dict[str, Any] = {
+            "name": name, "ownerId": owner_id or self._my_user_id(), "importPaths": list(import_paths),
+        }
+        if exclusion_patterns:
+            body["exclusionPatterns"] = list(exclusion_patterns)  # glob patterns, e.g. "**/_culled/**"
         data = self._req("POST", "/libraries", body)
         try:
             return str(data["id"])
@@ -165,6 +172,49 @@ class ImmichClient:
             body["rating"] = rating
         data = self._req("PUT", f"/assets/{asset_id}", body)
         return data if isinstance(data, dict) else {}
+
+    # -- people --------------------------------------------------------------------------------
+
+    # NOTE: the two endpoints below are UNVERIFIED against the current Immich docs (the sandbox had no access);
+    # they follow the API as remembered. Re-check on first real run.
+    #
+    # GET /api/people?withHidden=<bool>&page=<n>&size=<n>  (docs: People -> getAllPeople)
+    #   -> {"people": [{id, name, isHidden, ...}], "total", "hidden", "hasNextPage"}; older servers return a bare list.
+    def people(self, with_hidden: bool = False) -> list[dict]:
+        out: list[dict] = []
+        page = 1
+        while page <= 1000:  # hard stop against a server that never clears hasNextPage
+            path = f"/people?withHidden={'true' if with_hidden else 'false'}&page={page}&size=500"
+            data = self._req("GET", path)
+            if isinstance(data, list):
+                out.extend(p for p in data if isinstance(p, dict))
+                break
+            if not isinstance(data, dict):
+                break
+            out.extend(p for p in (data.get("people") or []) if isinstance(p, dict))
+            if not data.get("hasNextPage"):
+                break
+            page += 1
+        return out
+
+    # POST /api/search/metadata {"personIds": [id], "page": n, "size": 250}  (docs: Search -> searchAssets)
+    #   -> {"assets": {"items": [{id, originalPath, ...}], "nextPage": "2" | null}}
+    def person_assets(self, person_id: str) -> list[dict]:
+        out: list[dict] = []
+        page: int | None = 1
+        seen_pages: set[int] = set()
+        while page is not None and page not in seen_pages:
+            seen_pages.add(page)
+            data = self._req("POST", "/search/metadata", {"personIds": [person_id], "page": page, "size": 250})
+            block = (data or {}).get("assets") if isinstance(data, dict) else None
+            block = block if isinstance(block, dict) else {}
+            out.extend(a for a in (block.get("items") or []) if isinstance(a, dict))
+            nxt = block.get("nextPage")
+            try:
+                page = int(nxt) if nxt not in (None, "") else None
+            except (TypeError, ValueError):
+                page = None
+        return out
 
     # -- albums --------------------------------------------------------------------------------
 

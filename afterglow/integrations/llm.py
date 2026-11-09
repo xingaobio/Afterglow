@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import math
 import re
 from typing import Any
 
@@ -14,6 +15,12 @@ log = logging.getLogger(__name__)
 
 SCENES = ("landscape", "portrait", "street", "night", "food", "document", "screenshot", "pet", "event", "other")
 STYLES = ("landscape", "portrait", "night", "default")
+GRADE_KEYS = (
+    "exposure", "contrast", "highlights", "shadows", "whites", "blacks",
+    "temperature", "tint", "vibrance", "saturation", "dehaze", "clarity",
+)
+GRADE_MAX_EXPOSURE = 1.0  # EV
+GRADE_MAX_OTHER = 40
 _FORBIDDEN = re.compile(r'[/\\:*?"<>|\r\n\t]')
 _THINK = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 _FENCE = re.compile(r"^```[a-zA-Z0-9]*\s*\n?(.*?)\n?```\s*$", re.DOTALL)
@@ -191,3 +198,65 @@ class LLMClient:
     def _sanitize_name(name: str) -> str:
         name = _FORBIDDEN.sub("", name).strip().strip(".").strip()
         return name[:12].strip()
+
+    def grade(self, image_jpeg: bytes, scene: str, caption: str, instruction: str, language: str = "zh") -> dict:
+        """Ask the vision model for small slider corrections on top of an auto-toned image.
+
+        Returns {"adjustments": {key: number}, "reason": str}; adjustments are filtered, clamped and rounded.
+        """
+        keys = ", ".join(GRADE_KEYS)
+        if language == "zh":
+            system = (
+                "你是专业调色师。图片已经过自动调色，请只做小幅、克制、有品味的修正。"
+                "只输出一个 JSON 对象，不要任何其他文字。"
+                f'格式：{{"adjustments": {{滑块名: 数值}}, "reason": "一句话理由"}}。可用滑块：{keys}。'
+                "exposure 单位为 EV，范围 -1.0 到 1.0；其余滑块范围 -40 到 40，0 表示不改。"
+                "含义：exposure 整体亮度，正数更亮；contrast 对比度；highlights 高光，负数压暗高光；"
+                "shadows 阴影，正数提亮暗部；whites 白色色阶；blacks 黑色色阶；"
+                "temperature 色温，正数偏暖（黄），负数偏冷（蓝）；tint 色调，正数偏洋红，负数偏绿；"
+                "vibrance 自然饱和度；saturation 饱和度；dehaze 去雾，正数增强通透；clarity 清晰度（中间调对比）。"
+                "只列出确实需要修改的滑块；图片已经很好时返回空的 adjustments。"
+            )
+            user = f"场景：{scene}\n描述：{caption}\n期望风格：{instruction}\n请给出调色建议。"
+        else:
+            system = (
+                "You are a professional colourist. The image has already been auto-toned; make only small, "
+                "tasteful corrections. Output a single JSON object and nothing else. "
+                f'Format: {{"adjustments": {{slider: number}}, "reason": "one short sentence"}}. Sliders: {keys}. '
+                "exposure is in EV, range -1.0 to 1.0; every other slider ranges -40 to 40, 0 means no change. "
+                "Meaning: exposure overall brightness, positive is brighter; contrast; highlights, negative "
+                "recovers bright areas; shadows, positive lifts dark areas; whites; blacks; "
+                "temperature, positive is warmer (yellow), negative is cooler (blue); "
+                "tint, positive is magenta, negative is green; vibrance; saturation; "
+                "dehaze, positive adds punch and clarity through haze; clarity, mid-tone contrast. "
+                "List only sliders that really need changing; return an empty adjustments object if the image is fine."
+            )
+            user = f"Scene: {scene}\nCaption: {caption}\nDesired look: {instruction}\nSuggest the grade."
+        raw = self.chat_json(system, user, image_jpeg, max_tokens=300)
+        return {
+            "adjustments": self.normalise_grade(raw.get("adjustments")),
+            "reason": str(raw.get("reason", "") or "").strip(),
+        }
+
+    @staticmethod
+    def normalise_grade(raw: Any) -> dict[str, float | int]:
+        if not isinstance(raw, dict):
+            return {}
+        out: dict[str, float | int] = {}
+        for key in GRADE_KEYS:
+            value = raw.get(key)
+            if isinstance(value, bool) or value is None:
+                continue
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(number):
+                continue
+            if key == "exposure":
+                result: float | int = round(max(-GRADE_MAX_EXPOSURE, min(GRADE_MAX_EXPOSURE, number)), 2)
+            else:
+                result = int(round(max(-GRADE_MAX_OTHER, min(GRADE_MAX_OTHER, number))))
+            if result:
+                out[key] = result
+        return out

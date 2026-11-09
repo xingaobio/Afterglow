@@ -21,6 +21,8 @@ log = logging.getLogger(__name__)
 
 SCATTERED = "零散"
 IMMICH_CONTAINER_ROOT = "/mnt/afterglow"
+#: kv prefix: organized path -> file id (written by publish, read by people)
+ORGANIZED_KEY = "organized:"
 IMMICH_WAIT_SECONDS = 1800
 BACKUP_FRESH = timedelta(hours=24)
 
@@ -108,7 +110,8 @@ class Publish(Stage):
 
         outcomes = [failed.get(f.id) or StepOutcome.done(f.id) for f in files]
         state.set_steps(outcomes, self.name)
-        log.info("发布完成: %d 个文件，%d 个失败", len(files), len(failed))
+        bad = sum(1 for o in failed.values() if o.status == "failed")
+        log.info("发布完成: %d 个文件，%d 个失败", len(files), bad)
         return []
 
     # ------------------------------------------------------------------ events
@@ -176,6 +179,7 @@ class Publish(Stage):
             for fid in g["members"]:
                 if original is not None and fid != original:
                     original_of[fid] = int(original)
+        deferred = 0
         for rec in files:
             main = by_id.get(rec.pair_id) if rec.pair_id is not None else rec
             if main is None:
@@ -183,6 +187,14 @@ class Publish(Stage):
             anchor = by_id.get(original_of.get(rec.id, -1), main)
             bucket = self._bucket(main, analyses.get(main.id, {}))
             place = _Placement(rec, main, bucket)
+            group = events.get(anchor.id)
+            if group is not None and not group.get("name"):
+                # The folder name is the event name.  Placing the file under a provisional name would
+                # leave a stale copy behind once the event is named, so wait for `understand`.
+                failed[rec.id] = StepOutcome.skipped(rec.id, "等待事件命名")
+                deferred += 1
+                placements.append(place)
+                continue
             try:
                 dst = self._target(ctx, rec, anchor, bucket, events, used)
                 # copy_picks: keepers get a real copy on the SSD (viewable with the drive unplugged),
@@ -192,6 +204,12 @@ class Publish(Stage):
                     file_mode = "copy" if bucket == "keep" else "symlink"
                 self._link(ctx, Path(rec.path), dst, file_mode)
                 place.dst = dst
+                if not ctx.dry_run:
+                    # Reverse lookup (organized path -> file) for stages that start from an Immich asset
+                    # path, e.g. `people`; a copied keeper is not a symlink that could be resolved.
+                    key = ORGANIZED_KEY + str(dst)
+                    if ctx.state.get(key) != str(rec.id):
+                        ctx.state.set(key, str(rec.id))
                 if mode == "move" and not ctx.dry_run and dst.exists() and not Path(rec.path).exists():
                     # The original now lives in the organized tree; keep the catalog pointing at it.
                     relocate = getattr(ctx.state, "relocate_file", None)
@@ -203,6 +221,8 @@ class Publish(Stage):
                 log.exception("整理失败: %s", rec.path)
                 failed[rec.id] = StepOutcome.failed(rec.id, exc)
             placements.append(place)
+        if deferred:
+            log.warning("%d 个文件所在的事件还没有名字（视觉模型未完成），暂不放入目录树，下次运行再处理", deferred)
         return placements
 
     def _target(
@@ -297,7 +317,8 @@ class Publish(Stage):
                     break
             else:
                 library_id = immich.create_external_library(
-                    cfg.immich.external_library_name, [str(cfg.paths.organized)]
+                    cfg.immich.external_library_name, [str(cfg.paths.organized)],
+                    exclusion_patterns=cfg.organize.immich_exclusions,
                 )
             state.set("immich_library_id", library_id)
         immich.scan_library(library_id)

@@ -117,3 +117,33 @@ def test_bench_missing_script_or_passthrough(tmp_path: Path, monkeypatch: pytest
         assert code == 0 and seen[0][-2:] == ["--sample", "7"]
     else:
         assert code == 3
+
+
+def _tiny_source(tmp_path: Path) -> None:
+    from PIL import Image
+
+    src = tmp_path / "source"
+    src.mkdir(exist_ok=True)
+    Image.new("RGB", (64, 48), (90, 120, 150)).save(src / "a.jpg")
+
+
+def test_run_writes_report_and_report_subcommand(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _tiny_source(tmp_path)
+    cfg = write_cfg(tmp_path)
+    cli.main(["--config", str(cfg), "run", "--stages", "index"])
+    out = capsys.readouterr().out
+    reports = sorted((tmp_path / "work" / "reports").glob("run-*.html"))
+    assert len(reports) == 1 and (tmp_path / "work" / "reports" / "latest.html").is_file()
+    assert reports[0].name in out.replace("\n", "")
+    assert cli.main(["--config", str(cfg), "report"]) == 0
+    assert "run-1-" in capsys.readouterr().out.replace("\n", "")
+    assert cli.main(["--config", str(cfg), "report", "--run", "77"]) == 1
+
+
+def test_report_disabled_writes_nothing(tmp_path: Path) -> None:
+    _tiny_source(tmp_path)
+    cfg = write_cfg(tmp_path, extra="\n[report]\nenabled = false\n")
+    cli.main(["--config", str(cfg), "run", "--stages", "index"])
+    assert not (tmp_path / "work" / "reports").exists()

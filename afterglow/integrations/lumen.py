@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import json
 import logging
@@ -275,8 +276,11 @@ class LumenCLI:
     def apply_preset(self, path: str, name: str, amount: int = 100) -> dict:
         return self.run_command("edit.preset", {"path": path, "name": name, "amount": amount})
 
-    def apply_edits(self, path: str, changes: dict) -> dict:
-        return self.call_tool("apply_edits", {"path": path, "changes": changes})
+    def apply_edits(self, path: str, changes: dict, amount: int = 100, label: str = "") -> dict:
+        args: dict[str, Any] = {"path": path, "changes": changes, "amount": max(0, min(150, int(amount)))}
+        if label:
+            args["label"] = label
+        return self.call_tool("apply_edits", args)
 
     def export(self, path: str, output: str, quality: int, long_edge: int | None, overwrite: bool = True) -> dict:
         args: dict[str, Any] = {"path": path, "output": output, "quality": quality, "overwrite": overwrite}
@@ -300,6 +304,29 @@ class LumenCLI:
 
     def info(self, path: str) -> dict:
         return self.call_tool("photo_info", {"path": path})
+
+    def get_edits(self, path: str) -> dict:
+        """edit.get -> {path, process, state: {adjustments: {...}, ...}, changes: [...]} (current slider values)."""
+        return self.call_tool("get_edits", {"path": path})
+
+    def render_preview(self, path: str, size: int = 1024) -> bytes:
+        """render.preview -> JPEG bytes of the photo with its current edits (long edge `size`, 128-2048)."""
+        size = max(128, min(2048, int(size)))
+        with self._lock:
+            try:
+                result = self._call_once("render_preview", {"path": path, "size": size}, None)
+            except _ProcessDied:
+                if self._sequence_depth:
+                    raise
+                result = self._call_once("render_preview", {"path": path, "size": size}, None)
+        if isinstance(result, dict):
+            for part in result.get("content") or []:
+                if isinstance(part, dict) and part.get("type") == "image" and part.get("data"):
+                    if result.get("isError"):
+                        break
+                    return base64.b64decode(part["data"])
+        self._unwrap("render_preview", result)  # raises LumenError when isError
+        raise LumenError("LUMEN render_preview returned no image")
 
 
 class LumenLib:

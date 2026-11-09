@@ -632,6 +632,83 @@ class State:
         self._execute("INSERT INTO kv(key, value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                       (key, value))
 
+    # ------------------------------------------------------------------ run summary
+    def run_summary(self, run_id: int, max_failures: int = 200) -> dict[str, Any]:
+        """Everything the run report needs (ARCHITECTURE.md §11.3).
+
+        The run's time window is [started_at, finished_at or now]; per-stage counts, failures and outputs are the
+        rows whose `updated_at` / `created_at` fall inside it.  `new_events` are event groups that are *entirely*
+        new in this run: every member's 'group' step (status done) was updated inside the window.  Incremental
+        runs add late photos to existing events (`add_group_members`), and those events keep members whose group
+        step is older than the window, so they are not reported as new.
+        """
+        rows = self._query("SELECT * FROM runs WHERE id=?", (run_id,))
+        if not rows:
+            raise KeyError(f"run {run_id} 不存在")
+        row = dict(rows[0])
+        start = row["started_at"]
+        end = row["finished_at"] or now_iso()
+        run = {
+            "id": row["id"],
+            "started_at": start,
+            "finished_at": row["finished_at"],
+            "stages": [s for s in (row["stages"] or "").split(",") if s],
+            "ok": row["ok"] or 0,
+            "failed": row["failed"] or 0,
+            "skipped": row["skipped"] or 0,
+            "note": row["note"] or "",
+        }
+        stages: dict[str, dict[str, int]] = {}
+        for r in self._query(
+            "SELECT stage, status, COUNT(*) AS n FROM steps WHERE status IN ('done','failed','skipped') "
+            "AND updated_at>=? AND updated_at<=? GROUP BY stage, status",
+            (start, end),
+        ):
+            stages.setdefault(r["stage"], {"done": 0, "failed": 0, "skipped": 0})[r["status"]] = r["n"]
+        failures = [
+            {"path": r["path"], "stage": r["stage"], "error": r["error"] or ""}
+            for r in self._query(
+                "SELECT f.path AS path, s.stage AS stage, s.error AS error FROM steps s JOIN files f ON f.id=s.file_id "
+                "WHERE s.status='failed' AND s.updated_at>=? AND s.updated_at<=? ORDER BY s.updated_at, f.path LIMIT ?",
+                (start, end, max_failures),
+            )
+        ]
+        outputs = {
+            r["kind"]: r["n"]
+            for r in self._query(
+                "SELECT kind, COUNT(*) AS n FROM outputs WHERE created_at>=? AND created_at<=? GROUP BY kind",
+                (start, end),
+            )
+        }
+        new_events = [
+            {"id": r["id"], "name": r["name"] or "", "started_at": r["started_at"], "count": r["n"]}
+            for r in self._query(
+                "SELECT g.id AS id, g.name AS name, g.started_at AS started_at, "
+                "(SELECT COUNT(*) FROM group_members m WHERE m.group_id=g.id) AS n FROM groups g "
+                "WHERE g.kind='event' AND EXISTS (SELECT 1 FROM group_members m WHERE m.group_id=g.id) "
+                "AND NOT EXISTS (SELECT 1 FROM group_members m WHERE m.group_id=g.id AND NOT EXISTS "
+                "(SELECT 1 FROM steps s WHERE s.file_id=m.file_id AND s.stage='group' AND s.status='done' "
+                "AND s.updated_at>=? AND s.updated_at<=?)) ORDER BY g.started_at, g.id",
+                (start, end),
+            )
+        ]
+        rejects = {
+            r["reject_reason"]: r["n"]
+            for r in self._query(
+                "SELECT reject_reason, COUNT(*) AS n FROM analysis WHERE reject_reason IS NOT NULL "
+                "GROUP BY reject_reason"
+            )
+        }
+        return {
+            "run": run,
+            "rejects": rejects,
+            "stages": stages,
+            "failures": failures,
+            "outputs": outputs,
+            "new_events": new_events,
+            "library": self.stats(),
+        }
+
     # ------------------------------------------------------------------ stats
     def newest_file_mtime(self) -> float | None:
         rows = self._query("SELECT MAX(mtime) AS m FROM files")

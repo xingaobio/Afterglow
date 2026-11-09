@@ -254,3 +254,139 @@ def test_export_extension(tmp_path, images, fmt, name):
     ctx, lumen, rec = setup(tmp_path, images, lumen=Lumen(export_format=fmt, enhance="off"))
     run(ctx)
     assert (ctx.config.paths.output / "exports" / "trip" / name).exists()
+
+
+class GradeLumen(FakeLumen):
+    current = {"exposure": 0.5, "contrast": 10, "tint": 3}
+
+    def get_edits(self, path):
+        if getattr(self, "state_fail", False):
+            raise RuntimeError("no state")
+        return {"path": path, "state": {"adjustments": dict(self.current)}}
+
+    def render_preview(self, path, size=1024):
+        self.calls.append(("render", path, size))
+        return b"\xff\xd8rendered"
+
+    def apply_edits(self, path, changes, amount=100, label=""):
+        self.calls.append(("edits", path, changes, amount, label))
+        if getattr(self, "edits_fail", False):
+            raise RuntimeError("apply_edits failed")
+        return {}
+
+
+class FakeLLM:
+    def __init__(self, result=None, error=None):
+        self.result, self.error, self.calls = result, error, []
+
+    def grade(self, image_jpeg, scene, caption, instruction, language="zh"):
+        self.calls.append((image_jpeg, scene, caption, instruction, language))
+        if self.error:
+            raise self.error
+        return self.result
+
+
+def grade_setup(tmp_path, images, llm, scene="landscape", **overrides):
+    ctx, _, rec = setup(tmp_path, images, process=Process(straighten=False, crops=()), **overrides)
+    ctx.lumen = GradeLumen(images.tilted)
+    ctx.llm = llm
+    ctx.state.files[rec.id].preview_path = str(images.sharp)
+    ctx.state.set_description(rec.id, caption="海边日落", scene=scene, style_preset="landscape")
+    return ctx, ctx.lumen, rec
+
+
+def export_params(ctx, rec):
+    return [o for o in ctx.state.outputs(file_id=rec.id) if o["kind"] == "export"][0]["params"]
+
+
+def test_grade_mode_auto_never_calls_llm(tmp_path, images):
+    from afterglow.config import Grade
+
+    llm = FakeLLM({"adjustments": {"contrast": 10}, "reason": "r"})
+    ctx, lumen, rec = grade_setup(tmp_path, images, llm, grade=Grade(mode="auto"))
+    assert run(ctx)[0].status == "done"
+    assert llm.calls == []
+    assert [c[0] for c in lumen.calls] == ["open", "auto_tone", "export"]
+    assert export_params(ctx, rec)["grade"] is None
+
+
+def test_grade_applied_between_auto_tone_and_export(tmp_path, images):
+    from afterglow.config import Grade
+
+    llm = FakeLLM({"adjustments": {"exposure": 0.3, "contrast": 12, "tint": 0, "bogus": 5}, "reason": "提亮"})
+    ctx, lumen, rec = grade_setup(tmp_path, images, llm, grade=Grade(mode="llm", strength=70))
+    assert run(ctx)[0].status == "done"
+    assert [c[0] for c in lumen.calls] == ["open", "auto_tone", "render", "edits", "export"]
+    edits = lumen.calls[3]
+    # final values = LUMEN's current values + 70 % of the proposed deltas (edit.apply takes final values)
+    assert edits[2] == {"adjustments": {"exposure": 0.71, "contrast": 18}}
+    assert edits[3] == 100 and edits[4] == "afterglow grade"
+    assert len(llm.calls) == 1
+    image, scene, caption, instruction, language = llm.calls[0]
+    assert image == b"\xff\xd8rendered" and scene == "landscape" and caption == "海边日落"
+    assert instruction == ctx.config.grade.instruction and language == ctx.config.llm.language
+    assert export_params(ctx, rec)["grade"] == {
+        "adjustments": {"exposure": 0.3, "contrast": 12}, "applied": {"exposure": 0.71, "contrast": 18},
+        "reason": "提亮", "strength": 70,
+    }
+
+
+def test_grade_needs_current_state_and_clamps_to_slider_range(tmp_path, images):
+    llm = FakeLLM({"adjustments": {"contrast": 40}, "reason": "r"})
+    ctx, lumen, rec = grade_setup(tmp_path, images, llm)
+    lumen.state_fail = True
+    assert run(ctx)[0].status == "done"
+    assert "edits" not in [c[0] for c in lumen.calls] and export_params(ctx, rec)["grade"] is None
+
+    from afterglow.config import Grade
+
+    ctx, lumen, rec = grade_setup(tmp_path / "c", images, llm, grade=Grade(mode="llm", strength=100))
+    lumen.current = {"contrast": 90}
+    assert run(ctx)[0].status == "done"
+    assert [c for c in lumen.calls if c[0] == "edits"][0][2] == {"adjustments": {"contrast": 100}}
+
+
+def test_grade_failure_still_exports(tmp_path, images):
+    from afterglow.integrations.llm import LLMError
+
+    llm = FakeLLM(error=LLMError("down"))
+    ctx, lumen, rec = grade_setup(tmp_path, images, llm)
+    outcomes = run(ctx)
+    assert outcomes[0].status == "done"
+    assert [c[0] for c in lumen.calls] == ["open", "auto_tone", "render", "export"]
+    assert (ctx.config.paths.output / "exports" / "trip" / "IMG_1.jpg").exists()
+    assert export_params(ctx, rec)["grade"] is None
+
+
+def test_apply_edits_failure_still_exports(tmp_path, images):
+    llm = FakeLLM({"adjustments": {"contrast": 10}, "reason": "r"})
+    ctx, lumen, rec = grade_setup(tmp_path, images, llm)
+    lumen.edits_fail = True
+    assert run(ctx)[0].status == "done"
+    assert [c[0] for c in lumen.calls] == ["open", "auto_tone", "render", "edits", "export"]
+    assert export_params(ctx, rec)["grade"] is None
+
+
+def test_grade_skipped_for_other_scene_or_empty_result(tmp_path, images):
+    llm = FakeLLM({"adjustments": {"contrast": 10}, "reason": "r"})
+    ctx, lumen, rec = grade_setup(tmp_path, images, llm, scene="document")
+    assert run(ctx)[0].status == "done"
+    assert llm.calls == [] and "edits" not in [c[0] for c in lumen.calls]
+    assert export_params(ctx, rec)["grade"] is None
+
+    llm = FakeLLM({"adjustments": {}, "reason": "fine"})
+    ctx, lumen, rec = grade_setup(tmp_path / "e", images, llm)
+    run(ctx)
+    assert len(llm.calls) == 1 and "edits" not in [c[0] for c in lumen.calls]
+
+
+def test_grade_skipped_without_description_or_grade_method(tmp_path, images):
+    llm = FakeLLM({"adjustments": {"contrast": 10}, "reason": "r"})
+    ctx, lumen, rec = grade_setup(tmp_path, images, llm)
+    ctx.state._desc.pop(rec.id)
+    run(ctx)
+    assert llm.calls == []
+
+    ctx, lumen, rec = grade_setup(tmp_path / "n", images, object())  # llm without grade()
+    assert run(ctx)[0].status == "done"
+    assert export_params(ctx, rec)["grade"] is None
