@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.venv*/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+*.db
+*.db-wal
+*.db-shm
+/work/
+/output/
+deploy/immich/.env
+*.gguf
+*.onnx

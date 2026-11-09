@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "afterglow"
+version = "0.1.0"
+description = "Unattended, local, undoable photo-library pipeline built on LUMEN RAW, llama.cpp and Immich"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.12"
+authors = [{ name = "Xin Gao", email = "xingaouk@gmail.com" }]
+dependencies = [
+  "numpy>=2",
+  "opencv-python-headless>=4.10",
+  "Pillow>=11",
+  "rawpy>=0.25",
+  "httpx>=0.27",
+  "filelock>=3",
+  "rich>=13",
+]
+
+[project.optional-dependencies]
+geo = ["reverse_geocoder>=1.5"]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[project.scripts]
+afterglow = "afterglow.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["afterglow*"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
