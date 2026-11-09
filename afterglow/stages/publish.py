@@ -185,7 +185,12 @@ class Publish(Stage):
             place = _Placement(rec, main, bucket)
             try:
                 dst = self._target(ctx, rec, anchor, bucket, events, used)
-                self._link(ctx, Path(rec.path), dst, mode)
+                # copy_picks: keepers get a real copy on the SSD (viewable with the drive unplugged),
+                # everything else stays a cheap symlink.
+                file_mode = mode
+                if mode == "copy_picks":
+                    file_mode = "copy" if bucket == "keep" else "symlink"
+                self._link(ctx, Path(rec.path), dst, file_mode)
                 place.dst = dst
                 if mode == "move" and not ctx.dry_run and dst.exists() and not Path(rec.path).exists():
                     # The original now lives in the organized tree; keep the catalog pointing at it.
@@ -261,7 +266,7 @@ class Publish(Stage):
         if target in used and used[target] != str(src):
             target = target.with_name(f"{target.stem}_{(rec.sha256 or '')[:6]}{target.suffix}")
         used[target] = str(src)
-        self._link(ctx, src, target, "symlink" if mode == "move" else mode)
+        self._link(ctx, src, target, {"move": "symlink", "copy_picks": "copy"}.get(mode, mode))
 
     # ------------------------------------------------------------------ Immich
     @staticmethod

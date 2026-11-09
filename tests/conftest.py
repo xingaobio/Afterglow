@@ -16,7 +16,7 @@ import numpy as np
 import pytest
 from PIL import Image, ImageDraw, ImageFilter
 
-from afterglow.config import Config, Paths, Run
+from afterglow.config import Config, Organize, Paths, Run
 from afterglow.stages.base import STAGE_ORDER, FileRecord, StepOutcome
 
 # --------------------------------------------------------------------------- synthetic images
@@ -309,7 +309,7 @@ def fake_ctx(tmp_path: Path, **overrides: Any) -> SimpleNamespace:
         source=tmp_path / "source", work=tmp_path / "work", output=tmp_path / "work" / "output",
         organized=tmp_path / "library", backup=None,
     )
-    config = Config(paths=paths, run=Run(batch_size=50, workers=2))
+    config = Config(paths=paths, run=Run(batch_size=50, workers=2), organize=Organize(mode="symlink"))
     config = dataclasses.replace(config, **config_overrides)
     for d in (config.paths.source, config.paths.work, config.paths.output, config.paths.organized):
         d.mkdir(parents=True, exist_ok=True)

@@ -11,7 +11,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from afterglow.stages.base import SOFT_PREREQUISITES, STAGE_ORDER, FileRecord, StepOutcome
+from afterglow.stages.base import (
+    SOFT_PREREQUISITES,
+    STAGE_ORDER,
+    STAGES_WITHOUT_FILE_STEPS,
+    FileRecord,
+    StepOutcome,
+)
 
 SCHEMA_VERSION = 1
 
@@ -252,7 +258,7 @@ class State:
                     ts = now_iso()
                     self._conn.executemany(
                         "INSERT INTO steps(file_id, stage, status, attempts, updated_at) VALUES(?,?,'pending',0,?)",
-                        [(file_id, s, ts) for s in STAGE_ORDER if s != "backup"],
+                        [(file_id, s, ts) for s in STAGE_ORDER if s not in STAGES_WITHOUT_FILE_STEPS],
                     )
                 self._conn.commit()
             except BaseException:

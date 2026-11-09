@@ -542,3 +542,34 @@ class ImmichClient:                       # httpx，header x-api-key；所有方
 - 不吞异常：捕获后必须 `log.exception` 或转成 `StepOutcome(failed, error=...)`。
 - 子进程一律 `subprocess.run([...], check=False, capture_output=True, text=True, timeout=...)`，禁止 `shell=True`。
 - 依赖（`pyproject`）：`numpy>=2`, `opencv-python-headless>=4.10`, `Pillow>=11`, `rawpy>=0.25`, `httpx>=0.27`, `filelock>=3`, `rich>=13`, `reverse_geocoder>=1.5`（可选 extra `geo`）。dev：`pytest`, `ruff`.
+
+## 11. 第二版新增（v0.2）
+
+配置键见 `afterglow/config.py` 的 `People`、`Grade`、`Report` 和 `Organize.mode = "copy_picks"`（精选复制到 SSD，其余建链接；已实现）。
+
+### 11.1 人物相册（阶段 `people`，全局，非 GPU，排在 `publish` 之后）
+- `immich` 未启用或 `people.enabled = false` → 直接返回。不写每文件 steps。
+- `ImmichClient` 新增：`people(with_hidden=False) -> list[dict]`（id、name、可能的资产数）、`person_assets(person_id) -> list[dict]`（至少含 id、originalPath）。端点以 Immich 当前 API 为准，方法签名不变。
+- 对每个人物：资产按 originalPath 映射回 `files`（宿主机路径与容器路径相同，见 compose [3c]；映射不到的资产忽略）；映射到的文件数 < `min_photos` 跳过；无名字且 `include_unnamed = false` 跳过，否则名字为 `未命名 N`。
+- 相册名 `album_prefix + name`；成员 = 该人物的 pick 文件按 `analysis.quality` 降序取 `best_per_person` 张（0 = 全部）。
+- 幂等：`kv["immich_person_album:<person_id>"]` 存相册 id；已存在则只 `add_to_album` 新成员（成员签名存 `kv["immich_person_sig:<person_id>"]`，相同则跳过）。
+- 同时在本地 `groups(kind="person", name=人物名, meta={immich_person_id})` 记录成员（已存在则 `add_group_members`）。
+- 每个 Immich 写操作先 `ctx.undo.record("immich_album" | "immich_add_assets", meta=...)`，meta 形状与 publish 相同。
+- Immich 的人脸识别要在外部图库扫描后跑一段时间；首次运行可能 0 人，属正常，日志提示下次运行再建。
+
+### 11.2 自然语言调色（`process` 阶段导出链内）
+- `grade.mode = "auto"` → 行为不变。`"llm"` 且该文件 `descriptions.scene ∈ grade.scenes` 且 LLM 可用 → 在 `auto_tone` 之后、`export` 之前：
+  1. `ctx.llm.grade(image_jpeg, scene, caption, instruction, language) -> dict`：让视觉模型看预览图并返回 JSON
+     `{"adjustments": {exposure, contrast, highlights, shadows, whites, blacks, temperature, tint, vibrance, saturation, dehaze, clarity}, "reason": str}`；只保留这些键。
+  2. 客户端钳制：`exposure` ∈ [-1.0, 1.0]（EV），其余 ∈ [-40, 40]，非数字丢弃；全为 0 或空 → 不调用 LUMEN。
+  3. `ctx.lumen.apply_edits(path, {"adjustments": adj}, amount=grade.strength)`（`LumenCLI.apply_edits` 增加 `amount` 参数，映射到 LUMEN `edit.apply` 的 `amount`）。
+- LLM 或 `apply_edits` 失败只告警，继续导出自动调色的结果（不让文件 failed）。
+- `outputs(kind="export").params` 增加 `grade: {"adjustments": …, "reason": …, "strength": …}` 或 `grade: null`。
+- 整条链仍在 `lumen.sequence()` 内。LLM 调用放在进入 sequence **之前**（先拿到参数），避免长时间占着 LUMEN 锁。
+
+### 11.3 运行报告与通知（`afterglow/report.py`）
+- `State.run_summary(run_id) -> dict`：该次 run 的起止时间、各阶段 ok/failed/skipped（从 `runs` 与 `steps.updated_at` 落在本次 run 时间窗内统计）、失败文件清单（path、stage、error，最多 200 条）、库总览（`stats()`）、本次新增 outputs 按 kind 计数、本次新建的 event 组名。
+- `report.build_html(summary, config) -> str`：单文件 HTML（内联 CSS，无外部资源，中文），含：标题与时间、阶段表、精选/淘汰/重复计数、新事件列表、失败清单、磁盘占用（work/output/organized 的 `shutil.disk_usage`）。所有来自文件名/错误信息的文本必须 `html.escape`。
+- `report.write(ctx, run_id) -> Path`：写 `paths.reports/run-<id>-<YYYYMMDD-HHMM>.html`，并更新 `latest.html`（复制，不用链接）。
+- `report.notify(ctx, path, summary)`：`email_to` 与 `smtp_host` 非空 → `smtplib.SMTP` + STARTTLS，密码取 `os.environ[smtp_password_env]`（缺失则告警不发），主题 `Afterglow 运行 #<id>：成功 N，失败 M`，HTML 正文即报告；`notify_command` 非空 → `subprocess.run([cmd, str(path)], timeout=60)`（`shlex.split` 解析，不用 shell）。任何通知失败只告警。
+- CLI：`run` / `retry` 结束后若 `report.enabled` 且非 dry-run → `write` + `notify`，并打印报告路径；新子命令 `afterglow report [--run ID]` 重新生成。`watch` 的每次运行同样生成。

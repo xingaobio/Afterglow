@@ -50,7 +50,9 @@ services:
     env_file:
       - .env
     ports:
-      - '2283:2283'
+      # AFTERGLOW [6]: 只绑定本机回环地址，局域网里的其他设备访问不到。
+      # 想让家里的手机/平板访问，改成 '2283:2283'。
+      - '127.0.0.1:2283:2283'
     depends_on:
       - redis
       - database

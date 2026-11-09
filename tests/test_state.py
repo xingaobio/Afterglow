@@ -28,7 +28,7 @@ def test_schema_and_pragmas(state: State) -> None:
 def test_upsert_creates_pending_steps_except_backup(state: State) -> None:
     fid = add(state, "a.cr3", size=10)
     rows = state._conn.execute("SELECT stage, status FROM steps WHERE file_id=?", (fid,)).fetchall()
-    assert {r["stage"] for r in rows} == set(STAGE_ORDER) - {"backup"}
+    assert {r["stage"] for r in rows} == set(STAGE_ORDER) - {"backup", "people"}
     assert {r["status"] for r in rows} == {"pending"}
     # second upsert updates, keeps id and step states
     state.set_step(fid, "index", "done")

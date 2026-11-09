@@ -69,6 +69,10 @@ class Paths:
         return self.work / "previews"
 
     @property
+    def reports(self) -> Path:
+        return self.work / "reports"
+
+    @property
     def cache(self) -> Path:
         return self.work / "cache"
 
@@ -79,7 +83,7 @@ class Paths:
 
 @dataclass(frozen=True)
 class Organize:
-    mode: str = "symlink"  # symlink | hardlink | copy | move
+    mode: str = "copy_picks"  # copy_picks | symlink | hardlink | copy | move
     layout: str = "{year}/{year}-{month:02d} {event}/{basename}"
     culled_dir: str = "_culled"
     duplicates_dir: str = "_duplicates"
@@ -162,6 +166,40 @@ class Immich:
 
 
 @dataclass(frozen=True)
+class People:
+    """Person albums built from Immich's face recognition (stage `people`)."""
+
+    enabled: bool = True
+    min_photos: int = 5  # ignore people Immich found in fewer photos than this
+    album_prefix: str = "人物 · "
+    best_per_person: int = 30  # album holds this many best-quality picks per person (0 = all)
+    include_unnamed: bool = False  # people without a name in Immich get "人物 · 未命名 N"
+
+
+@dataclass(frozen=True)
+class Grade:
+    """Natural-language colour grading on top of LUMEN's automatic adjustment (stage `process`)."""
+
+    mode: str = "llm"  # auto = LUMEN edit.auto only | llm = edit.auto, then model-proposed adjustments
+    instruction: str = "自然、通透，肤色准确，不过度饱和"  # the look you want, in your own words
+    strength: int = 60  # percent of the proposed change that is applied (LUMEN apply_edits amount)
+    scenes: tuple[str, ...] = ("landscape", "portrait", "street", "night", "food", "pet", "event")
+
+
+@dataclass(frozen=True)
+class Report:
+    """Per-run HTML report and optional notification."""
+
+    enabled: bool = True
+    email_to: str = ""  # empty = no e-mail
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password_env: str = "AFTERGLOW_SMTP_PASSWORD"  # the password is read from this environment variable
+    notify_command: str = ""  # optional program run with the report path as its only argument
+
+
+@dataclass(frozen=True)
 class Backup:
     tool: str = "rsync"
     verify: str = "size"  # size | sha256
@@ -191,6 +229,9 @@ class Config:
     video: Video = field(default_factory=Video)
     immich: Immich = field(default_factory=Immich)
     backup: Backup = field(default_factory=Backup)
+    people: People = field(default_factory=People)
+    grade: Grade = field(default_factory=Grade)
+    report: Report = field(default_factory=Report)
     gpu: Gpu = field(default_factory=Gpu)
     run: Run = field(default_factory=Run)
     path: Path | None = None  # where this config was loaded from
@@ -198,7 +239,7 @@ class Config:
     def validate(self, require_source: bool = True) -> list[str]:
         """Return a list of problems (empty when valid).  Raise nothing; the CLI decides."""
         problems: list[str] = []
-        if self.organize.mode not in ("symlink", "hardlink", "copy", "move"):
+        if self.organize.mode not in ("copy_picks", "symlink", "hardlink", "copy", "move"):
             problems.append(f"organize.mode 无效: {self.organize.mode}")
         if self.organize.mode == "move" and not self.backup.require_before_move:
             problems.append("organize.mode = move 时必须 backup.require_before_move = true")
@@ -210,6 +251,10 @@ class Config:
             problems.append(f"process.scope 无效: {self.process.scope}")
         if self.lumen.enhance not in ("off", "auto", "all"):
             problems.append(f"lumen.enhance 无效: {self.lumen.enhance}")
+        if self.grade.mode not in ("auto", "llm"):
+            problems.append(f"grade.mode 无效: {self.grade.mode}")
+        if not 0 <= self.grade.strength <= 100:
+            problems.append(f"grade.strength 应在 0–100 之间: {self.grade.strength}")
         if self.backup.verify not in ("size", "sha256"):
             problems.append(f"backup.verify 无效: {self.backup.verify}")
         for ratio in self.process.crops:
@@ -250,6 +295,7 @@ def from_dict(data: dict[str, Any], path: Path | None = None) -> Config:
     sections = {
         "paths": Paths, "organize": Organize, "cull": Cull, "events": Events, "llm": LLM, "lumen": Lumen,
         "process": Process, "video": Video, "immich": Immich, "backup": Backup, "gpu": Gpu, "run": Run,
+        "people": People, "grade": Grade, "report": Report,
     }
     kwargs: dict[str, Any] = {}
     for name, value in data.items():

@@ -9,7 +9,7 @@ backup    = "/media/xin/BACKUP"            # 备份盘挂载点；空字符串�
 include_ext = ["cr2", "cr3", "nef", "arw", "dng", "raf", "orf", "rw2", "jpg", "jpeg", "heic", "png", "mp4", "mov", "avi", "mts"]  # 处理的扩展名
 
 [organize]
-mode       = "symlink"      # 整理方式：symlink | hardlink | copy | move（move 需先通过备份校验）
+mode       = "copy_picks"   # 整理方式：copy_picks（精选复制到 SSD，其余建链接）| symlink | hardlink | copy | move（move 需先通过备份校验）
 layout     = "{year}/{year}-{month:02d} {event}/{basename}"  # 目录树布局模板
 culled_dir = "_culled"      # 非精选（模糊、连拍备选等）存放的子目录
 duplicates_dir = "_duplicates"  # 完全重复文件存放的子目录
@@ -87,3 +87,25 @@ lock_file = "/data/afterglow/gpu.lock"  # GPU 互斥锁文件
 [run]
 batch_size = 200            # 每批处理的文件数
 workers    = 4              # CPU 并行线程数（索引、哈希、EXIF）
+
+[people]
+enabled         = true          # 用 Immich 的人脸识别结果自动建人物相册
+min_photos      = 5             # 照片少于此数的人物忽略
+album_prefix    = "人物 · "     # 相册名前缀，后接 Immich 里给这个人起的名字
+best_per_person = 30            # 每人相册只放质量分最高的 N 张精选（0 = 全部）
+include_unnamed = false         # 是否也给 Immich 里还没起名的人建相册
+
+[grade]
+mode        = "llm"             # auto = 只用 LUMEN 自动调色；llm = 自动调色后再让视觉模型按下面的描述给出参数
+instruction = "自然、通透，肤色准确，不过度饱和"   # 你想要的风格，用自己的话写
+strength    = 60                # 模型建议的调整应用多少（百分比，0–100）
+scenes      = ["landscape", "portrait", "street", "night", "food", "pet", "event"]   # 只对这些场景做自然语言调色
+
+[report]
+enabled           = true        # 每次运行结束在 work/reports/ 生成一页 HTML 汇总
+email_to          = ""          # 留空 = 不发邮件
+smtp_host         = ""
+smtp_port         = 587
+smtp_user         = ""
+smtp_password_env = "AFTERGLOW_SMTP_PASSWORD"   # 密码从这个环境变量读取，不写进配置文件
+notify_command    = ""          # 可选：运行结束后执行的程序，参数是报告文件路径

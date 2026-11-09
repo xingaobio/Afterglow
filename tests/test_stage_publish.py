@@ -183,8 +183,11 @@ def test_move_mode_downgrades_without_fresh_backup(tmp_path):
 
 
 def test_custom_layout_and_dirs(tmp_path):
-    ctx, f = make_library(tmp_path, organize=Organize(layout="{event}/{year}{month:02d}{day:02d}_{basename}",
-                                                      culled_dir="rejects", duplicates_dir="dupes"))
+    organize = Organize(
+        mode="symlink", layout="{event}/{year}{month:02d}{day:02d}_{basename}", culled_dir="rejects",
+        duplicates_dir="dupes",
+    )
+    ctx, f = make_library(tmp_path, organize=organize)
     run(ctx)
     assert lib(ctx, "苏格兰徒步", "20240512_a.jpg").is_symlink()
     assert lib(ctx, "rejects", "苏格兰徒步", "20240512_c.jpg").is_symlink()
@@ -333,3 +336,23 @@ def test_event_name_missing_falls_back_to_scattered(tmp_path):
     ctx.state.set_analysis(rec.id, pick=1)
     run(ctx)
     assert lib(ctx, "2022", "2022-03 零散", "z.jpg").is_symlink()
+
+
+def test_copy_picks_copies_keepers_and_links_the_rest(tmp_path):
+    """organize.mode = copy_picks: picks become real files on the SSD, rejects stay symlinks."""
+    ctx = fake_ctx(tmp_path, organize=Organize(mode="copy_picks"))
+    src = ctx.config.paths.source
+    keep, cull = src / "keep.jpg", src / "cull.jpg"
+    keep.write_bytes(b"keep")
+    cull.write_bytes(b"cull")
+    when = "2024-05-12T10:00:00+00:00"
+    k = add_file(ctx, "keep.jpg", captured_at=when, sha256="a" * 64)
+    c = add_file(ctx, "cull.jpg", captured_at=when, sha256="b" * 64)
+    ctx.state.set_analysis(k.id, pick=1, quality=80.0)
+    ctx.state.set_analysis(c.id, pick=0, reject_reason="blurry")
+    STAGE().run(ctx, [])
+    placed = {p.name: p for p in ctx.config.paths.organized.rglob("*.jpg")}
+    assert placed["keep.jpg"].is_file() and not placed["keep.jpg"].is_symlink()
+    assert placed["keep.jpg"].read_bytes() == b"keep"
+    assert placed["cull.jpg"].is_symlink()
+    assert keep.read_bytes() == b"keep" and cull.read_bytes() == b"cull"

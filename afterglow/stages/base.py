@@ -16,8 +16,11 @@ if TYPE_CHECKING:
     from afterglow.context import Context
 
 STAGE_ORDER: tuple[str, ...] = (
-    "backup", "index", "cull", "group", "understand", "process", "merge", "video", "publish",
+    "backup", "index", "cull", "group", "understand", "process", "merge", "video", "publish", "people",
 )
+
+#: Stages that keep no per-file step rows.
+STAGES_WITHOUT_FILE_STEPS: frozenset[str] = frozenset({"backup", "people"})
 
 #: Prerequisite stages that only need to have been *attempted*: a file whose `understand` step failed
 #: (LLM down, bad JSON) still goes through process/merge/video/publish with empty tags (ARCHITECTURE §4).
